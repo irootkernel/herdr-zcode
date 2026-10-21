@@ -18,8 +18,7 @@
     "README.md",
     "HERDR.md",
     "GLOBAL-SETUP.md",
-    "docs/app-server.md",
-    "docs/verification.md"
+    "docs/app-server.md"
   ],
   "engines": {
     "node": ">=20"

@@ -2,7 +2,7 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { once } from 'node:events';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 const exec = promisify(execFile);
@@ -14,7 +14,7 @@ export async function testHerdrSession() {
   const directory = await mkdtemp(join(process.env.TEST_TMP_ROOT || tmpdir(), 'hz-herdr-test-'));
   const name = 'hz-test-' + randomUUID().slice(0, 12);
   const sessionDeadline = performance.now() + 250000;
-  const binary = process.env.HERDR_TEST_BIN || '/Users/draccoon/.local/bin/herdr';
+  const binary = process.env.HERDR_TEST_BIN || join(homedir(), '.local', 'bin', 'herdr');
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('HERDR_')));
   env.HERDR_CONFIG_PATH = join(directory, 'herdr.toml');
   await writeFile(env.HERDR_CONFIG_PATH, '[terminal]\ndefault_shell = "/bin/sh"\nshell_mode = "non_login"\n[update]\nversion_check = false\nmanifest_check = false\n');
