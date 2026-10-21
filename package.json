@@ -1,0 +1,33 @@
+{
+  "name": "herdr-zcode",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "description": "Thin ZCode app-server terminal executor for Herdr",
+  "type": "module",
+  "bin": {
+    "herdr-zcode": "bin/herdr-zcode-app.mjs"
+  },
+  "files": [
+    "bin/herdr-zcode-app.mjs",
+    "lib/app-server-client.mjs",
+    "lib/app-server-controller.mjs",
+    "lib/desktop-account.mjs",
+    "lib/desktop-runtime.mjs",
+    "lib/herdr-reporter.mjs",
+    "README.md",
+    "HERDR.md",
+    "GLOBAL-SETUP.md",
+    "docs/app-server.md",
+    "docs/verification.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:live-account": "node tests/live-account.mjs --authorize-live",
+    "test:live-herdr": "node tests/live-herdr-app.mjs --authorize-live",
+    "test:live-reporter": "node tests/live-herdr-reporter.mjs --authorize-herdr"
+  }
+}

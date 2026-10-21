@@ -1,0 +1,3 @@
+Coordinator task
+/exit
+Keep this as one multiline prompt.

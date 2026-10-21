@@ -1,0 +1,21 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, symlink, rm, readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const exec = promisify(execFile);
+test('npm-style executable symlink dispatches version/help without account access', async t => {
+  const root = await mkdtemp(join(process.env.TEST_TMP_ROOT || tmpdir(), 'hz-bin-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const link = join(root, 'herdr-zcode');
+  await symlink(fileURLToPath(new URL('../bin/herdr-zcode-app.mjs', import.meta.url)), link);
+  const env = { PATH: process.env.PATH, HOME: root };
+  const version = await exec(process.execPath, [link, '--version'], { env, cwd: root, timeout: 4000 });
+  const metadata = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(version.stdout, `herdr-zcode ${metadata.version}\n`);
+  const help = await exec(process.execPath, [link, '--help'], { env, cwd: root, timeout: 4000 });
+  assert.match(help.stdout, /--prompt-file/);
+});
