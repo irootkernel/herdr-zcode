@@ -93,10 +93,10 @@ Ctrl-C cancels active work. When no work is running, Ctrl-C exits. The default p
 By default herdr-zcode uses `account:zai-individual-coding-plan/GLM-5.3` with the reasoning level the model advertises. To override the level, append `$level` to the model, following ZCode's own model-reference convention:
 
 ```sh
-herdr-zcode --cwd /path/to/project --model 'account:zai-individual-coding-plan/GLM-5.3$high'
+herdr-zcode --cwd /path/to/project --model 'account:zai-individual-coding-plan/GLM-5.3$max'
 ```
 
-The part before `$` selects the model; the suffix after it names the reasoning level. GLM-5.3 and GLM-5.3-Flash advertise `low`, `high`, and `max`, and default to `max`. A level the model does not advertise is rejected at startup with the supported list. The startup line confirms what was applied, for example `Selected: account:zai-individual-coding-plan/GLM-5.3 (reasoning: high)`.
+Keep the model reference in single quotes so the shell passes `$max` literally. The part before `$` selects the model; the suffix after it names the reasoning level. GLM-5.3 and GLM-5.3-Flash advertise `low`, `high`, and `max`, and default to `max`. A level the model does not advertise is rejected at startup with the supported list. The startup line confirms what was applied, for example `Selected: account:zai-individual-coding-plan/GLM-5.3 (reasoning: max)`.
 
 ### Longer requests and saved conversations
 

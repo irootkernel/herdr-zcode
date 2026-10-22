@@ -23,6 +23,16 @@ Use the returned `.result.pane.pane_id` and `.result.session`. If a session is r
 
 If caller verification fails, follow the shared skill's `dev-herdr --identify-caller` recovery procedure. Do not infer identity from focus, working directory, or inherited pane IDs, create substitute panes, or share a pending probe. Existing session, login-service, and running-view configuration remains governed by the local Herdr installation.
 
+## Model and reasoning level
+
+The default model is `account:zai-individual-coding-plan/GLM-5.3`. To request the `max` reasoning level explicitly, run:
+
+```sh
+herdr-zcode --cwd /path/to/project --model 'account:zai-individual-coding-plan/GLM-5.3$max'
+```
+
+Keep the model reference in single quotes so the shell passes `$max` literally. Without a `$level` suffix, the model's advertised default applies; GLM-5.3 defaults to `max`. Check the startup line for the selected model and reasoning level. See the [README](README.md#choosing-a-model-and-reasoning-level) for details.
+
 ## Start an executor and send a task
 
 Start in an available shell pane assigned by the coordinator. Replace placeholders below with actual allocator results; omit `--session` if none was returned.
