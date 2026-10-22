@@ -9,7 +9,7 @@ const event = (type, payload = {}, extra = {}) => send({ method: 'session/event'
 const reverse = (method, params, id = `server-${waiting.size + 1}`) => new Promise(resolve => {
   waiting.set(id, resolve); send({ id, method, params });
 });
-const available = [{ ref: { providerId: 'account:zai-individual-coding-plan', modelId: 'GLM-5.3' }, reasoning: { defaultLevel: 'medium' } }];
+const available = [{ ref: { providerId: 'account:zai-individual-coding-plan', modelId: 'GLM-5.3' }, reasoning: { levels: [{ value: 'low' }, { value: 'high' }, { value: 'max' }], defaultLevel: 'max' } }];
 const snapshot = () => ({ session: { sessionId }, settings: { model: {
   current: scenario === 'wrong-model' ? { providerId: 'wrong', modelId: 'other' } : available[0].ref,
   available: scenario === 'missing-model' ? [] : available } } });
@@ -168,7 +168,7 @@ rl.on('line', line => {
         break;
       case 'session/setModel':
         assert.equal(p.persistAsWorkspaceLastUsed, false);
-        assert.equal(p.model.options.reasoningLevel, 'medium');
+        assert.equal(p.model.options.reasoningLevel, process.env.TEST_REASONING || 'max');
         reply(m.id, snapshot()); break;
       case 'session/setMode': assert.equal(p.mode, 'guarded'); reply(m.id, {}); break;
       case 'session/subscribe':

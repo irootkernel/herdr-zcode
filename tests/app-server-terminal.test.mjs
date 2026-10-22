@@ -177,6 +177,28 @@ test('CLI defaults to build and accepts user-explicit native modes while refusin
   assert.throws(() => parseArgs(['--cwd']));
 });
 
+test('a $level suffix on --model overrides the advertised default reasoning level', async () => {
+  const plain = parseArgs(['--model', 'account:zai/GLM-5.3']);
+  assert.equal(plain.model, 'account:zai/GLM-5.3');
+  assert.equal(plain.reasoning, undefined);
+  const leveled = parseArgs(['--model', 'account:zai/GLM-5.3$high']);
+  assert.equal(leveled.model, 'account:zai/GLM-5.3');
+  assert.equal(leveled.reasoning, 'high');
+  assert.equal(parseArgs(['--model', 'GLM-5.3$low']).reasoning, 'low');
+  const trailing = parseArgs(['--model', 'account:zai/GLM-5.3$']);
+  assert.equal(trailing.model, 'account:zai/GLM-5.3$');
+  assert.equal(trailing.reasoning, undefined);
+  const leading = parseArgs(['--model', 'account:zai/$high']);
+  assert.equal(leading.model, 'account:zai/$high');
+  assert.equal(leading.reasoning, undefined);
+  const app = launch('normal', ['--model', 'account:zai-individual-coding-plan/GLM-5.3$high'],
+    { env: { ...process.env, TEST_SCENARIO: 'normal', TEST_REASONING: 'high' } });
+  app.child.stdin.end('reasoning prompt\n');
+  const result = await app.result; clean(result);
+  assert.match(result.out, /Selected: account:zai-individual-coding-plan\/GLM-5\.3 \(reasoning: high\)/);
+  assert.match(result.out, /Reply 1/);
+});
+
 function controllerFixture() {
   const client = new EventEmitter();
   client.handlers = new Map();

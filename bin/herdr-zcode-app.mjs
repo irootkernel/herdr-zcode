@@ -18,6 +18,16 @@ export function parseArgs(argv) {
     if (!['--cwd', '--model', '--mode', '--resume', '--prompt-file', '--app-bundle'].includes(arg) || !argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error('Invalid command arguments');
     options[arg.slice(2)] = argv[++i];
   }
+  // ZCode's own model-reference convention: a `$level` suffix after the first
+  // `/` selects the reasoning level; a `$` at the id start or end stays literal.
+  if (typeof options.model === 'string') {
+    const idStart = options.model.indexOf('/') + 1;
+    const marker = options.model.indexOf('$', idStart);
+    if (marker > idStart && marker < options.model.length - 1) {
+      options.reasoning = options.model.slice(marker + 1);
+      options.model = options.model.slice(0, marker);
+    }
+  }
   options.cwd = resolve(options.cwd);
   if (!['plan', 'build', 'edit', 'guarded', 'yolo', 'auto'].includes(options.mode)) throw new Error('Use mode plan, build, edit, guarded, yolo, or auto');
   return options;
@@ -39,7 +49,7 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     return 0;
   }
   if (options.help) {
-    write('herdr-zcode [--cwd <path>] [--model <provider/model>] [--mode <mode>] [--resume <session>]\n[--prompt-file <path>] [--app-bundle <path>] [--version] [--bridge-help]\nModes use native ZCode semantics: plan, build (default), edit, guarded, yolo, auto. Only explicit --mode changes the default.\nPrompt text or /help. EOF drains queued work; /exit cancels. Ctrl-C stops active work; idle Ctrl-C quits.\n');
+    write('herdr-zcode [--cwd <path>] [--model <provider/model[$level]>] [--mode <mode>] [--resume <session>]\n[--prompt-file <path>] [--app-bundle <path>] [--version] [--bridge-help]\nModes use native ZCode semantics: plan, build (default), edit, guarded, yolo, auto. Only explicit --mode changes the default.\nA $level suffix on --model, such as GLM-5.3$high, overrides the model\'s advertised default reasoning level.\nPrompt text or /help. EOF drains queued work; /exit cancels. Ctrl-C stops active work; idle Ctrl-C quits.\n');
     return 0;
   }
   const early = [];
@@ -151,7 +161,8 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     const chosen = created.settings?.model?.available?.find(item => item.ref?.providerId === account.selection.providerId && item.ref?.modelId === account.selection.modelId);
     if (!chosen || chosen.availability === 'unavailable') throw new Error('Selected model unavailable');
     const model = { ...account.selection };
-    if (chosen.reasoning?.defaultLevel) model.options = { reasoningLevel: chosen.reasoning.defaultLevel };
+    const reasoningLevel = options.reasoning || chosen.reasoning?.defaultLevel;
+    if (reasoningLevel) model.options = { reasoningLevel };
     const configured = await rpc('session/setModel', { sessionId, model, persistAsWorkspaceLastUsed: false });
     const observed = configured?.settings?.model?.current;
     if (observed?.providerId !== model.providerId || observed?.modelId !== model.modelId) throw new Error('Selected model was not applied');
@@ -159,7 +170,7 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     const subscribed = await rpc('session/subscribe', { sessionId, deliveryKind: 'desktop-continuous', includeSnapshot: true });
     const subscribedModel = subscribed?.snapshot?.settings?.model?.current;
     if (subscribedModel?.providerId !== model.providerId || subscribedModel?.modelId !== model.modelId) throw new Error('Selected model changed before subscription');
-    write(`Selected: ${account.selection.providerId}/${account.selection.modelId}\n`);
+    write(`Selected: ${account.selection.providerId}/${account.selection.modelId}${reasoningLevel ? ` (reasoning: ${reasoningLevel})` : ''}\n`);
     controller.attach(sessionId, subscribed?.snapshot ?? created,
       subscribed?.snapshot?.runtime?.eventSeq ?? subscribed?.eventSeq ?? 0);
     write('Type /help for commands.\n');
