@@ -4,11 +4,13 @@ herdr-zcode is a line-oriented terminal client for ZCode Desktop's app-server. I
 
 ## Develop locally
 
-Use Node.js 20 or later. From a checkout of this repository:
+Use the exact tool versions in `toolchains.env`. From a checkout of this repository:
 
 ```sh
-node bin/herdr-zcode-app.mjs --help
-npm test
+./dev setup
+./dev doctor
+./dev run --help
+./dev test
 ```
 
 The offline suite uses fake app-server and Herdr processes with temporary credentials. It does not require a Desktop account or consume model usage.
@@ -16,17 +18,17 @@ The offline suite uses fake app-server and Herdr processes with temporary creden
 For a real session, install ZCode Desktop on macOS and sign in to a Z.AI Individual Coding Plan account, then run:
 
 ```sh
-node bin/herdr-zcode-app.mjs --cwd /path/to/project
+./dev run --cwd /path/to/project
 ```
 
 To install a standalone copy of the checkout:
 
 ```sh
-npm install --global --prefix "$HOME/.local" --install-links .
+./dev install
 "$HOME/.local/bin/herdr-zcode" --version
 ```
 
-`--install-links` installs a package copy instead of a symlink to the checkout. Repeat the installation after source changes. Inspect distribution contents with `npm pack --dry-run`.
+`--install-links` installs a package copy instead of a symlink to the checkout. Repeat the installation after source changes. Build archives with `./dev pack`, or inspect contents with `./dev npm pack --dry-run`. See [toolchain management](toolchains.md) for setup and upgrades.
 
 ## Module responsibilities
 
@@ -45,7 +47,7 @@ Launch the app-owned Electron binary with `ELECTRON_RUN_AS_NODE=1` and the bundl
 
 Startup registers the account catalog revision, creates or resumes the session, verifies the exact available model, applies the requested reasoning level or the model's advertised default, and subscribes to session events. The default model ID is `account:zai-individual-coding-plan/GLM-5.3`. A `$level` suffix on `--model` follows ZCode's model-reference convention (`parseModelPickerValue`: the first `$` after the `/` starts the level; a `$` at the id start or end is literal) and sets `model.options.reasoningLevel` at `session/setModel`; without it the advertised `reasoning.defaultLevel` applies (GLM-5.3 advertises `low`, `high`, `max` and defaults to `max`). The server rejects a level absent from `reasoning.levels`, listing the supported values. Verify the model returned by both selection and subscription; do not silently substitute a model or infer an ID from its display name.
 
-Read Desktop v2 settings and the existing Coding Plan credentials on demand. Copy only the public provider catalog into temporary storage, bind both built-in and personal provider paths, and include the active catalog path digest in revision identity. Avoid hardcoding app versions, CPU architectures, or endpoint-cache paths. Return authentication only for matching provider/account-access requests. Account changes require restarting the session.
+Read Desktop v2 settings and the existing Coding Plan credentials on demand. Copy only the public provider catalog into temporary storage, bind both built-in and personal provider paths, and include the active catalog path digest in revision identity. Check the app version, build, and embedded Node/Electron against `toolchains.env` before catalog preparation or account access. App path overrides do not waive these checks. Return authentication only for matching provider/account-access requests. Account changes require restarting the session.
 
 Do not write Desktop credentials, workspace model defaults, or personal provider settings. Strip inherited Herdr routing and legacy bridge credentials from the app-server environment. Unsupported optional host requests return explicit errors; Browser, Computer Use, and a full Desktop UI are outside this client's scope.
 
@@ -69,14 +71,14 @@ On exit, decline unresolved requests, stop and close the session, await owned-pr
 
 ## Testing changes
 
-Run `npm test` for changes to transport, controllers, account handling, or reporting. The suite covers startup and EOF, reverse RPCs, simultaneous interactions, stale and foreign events, background work, model identity, stream redaction, cancellation, process-group cleanup, reporter outages, and executable symlinks. Use `TEST_TMP_ROOT` to select a writable scratch root when needed.
+Run `./dev test` for changes to transport, controllers, account handling, or reporting. The suite covers startup and EOF, reverse RPCs, simultaneous interactions, stale and foreign events, background work, model identity, stream redaction, cancellation, process-group cleanup, reporter outages, and executable symlinks. Use `TEST_TMP_ROOT` to select a writable scratch root when needed.
 
 Live checks are separate and use real services. Account and Herdr/model checks consume account usage. Run only the checks relevant to an explicitly authorized integration test:
 
 ```sh
-npm run test:live-account
-npm run test:live-reporter
-npm run test:live-herdr -- --scenario basic
+./dev npm run test:live-account
+./dev npm run test:live-reporter
+./dev npm run test:live-herdr -- --scenario basic
 ```
 
 Other Herdr/model scenarios are `permissions`, `subagent`, `question`, `cancel`, `multiline`, `resume`, and `coding`. Set `HERDR_TEST_BIN` if Herdr is not installed at `~/.local/bin/herdr`. Live drivers create disposable named sessions and test-owned directories; never substitute an existing user session. Remove only test-owned resources.

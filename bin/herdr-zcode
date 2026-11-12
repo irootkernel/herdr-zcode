@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+entry=$0
+while [ -L "$entry" ]; do
+  base=$(CDPATH= cd -- "$(dirname -- "$entry")" && pwd -P)
+  target=$(readlink "$entry")
+  case "$target" in /*) entry=$target ;; *) entry=$base/$target ;; esac
+done
+root=$(CDPATH= cd -- "$(dirname -- "$entry")/.." && pwd -P)
+exec "$root/scripts/toolchain.sh" run "$@"

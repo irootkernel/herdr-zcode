@@ -6,9 +6,17 @@
   "description": "Thin ZCode app-server terminal executor for Herdr",
   "type": "module",
   "bin": {
-    "herdr-zcode": "bin/herdr-zcode-app.mjs"
+    "herdr-zcode": "bin/herdr-zcode"
   },
   "files": [
+    "bin/herdr-zcode",
+    "scripts/toolchain.sh",
+    "scripts/dev.mjs",
+    "scripts/check-toolchain.mjs",
+    "scripts/tool-bin/npm",
+    "scripts/tool-bin/npx",
+    "toolchains.env",
+    "lib/toolchain.mjs",
     "bin/herdr-zcode-app.mjs",
     "lib/app-server-client.mjs",
     "lib/app-server-controller.mjs",
@@ -18,15 +26,17 @@
     "README.md",
     "HERDR.md",
     "GLOBAL-SETUP.md",
-    "docs/app-server.md"
+    "docs/app-server.md",
+    "docs/toolchains.md"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test tests/*.test.mjs",
-    "test:live-account": "node tests/live-account.mjs --authorize-live",
-    "test:live-herdr": "node tests/live-herdr-app.mjs --authorize-live",
-    "test:live-reporter": "node tests/live-herdr-reporter.mjs --authorize-herdr"
+    "prepack": "node scripts/check-toolchain.mjs",
+    "test": "node scripts/check-toolchain.mjs && node --test tests/*.test.mjs",
+    "test:live-account": "node scripts/check-toolchain.mjs && node tests/live-account.mjs --authorize-live",
+    "test:live-herdr": "node scripts/check-toolchain.mjs && node tests/live-herdr-app.mjs --authorize-live",
+    "test:live-reporter": "node scripts/check-toolchain.mjs && node tests/live-herdr-reporter.mjs --authorize-herdr"
   }
 }

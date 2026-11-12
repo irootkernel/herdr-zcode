@@ -10,29 +10,25 @@ You need:
 
 - macOS with ZCode Desktop installed, normally in `/Applications/ZCode.app`.
 - A Z.AI Individual Coding Plan account signed in through ZCode Desktop.
-- Node.js 20 or later, including npm. If you need to install Node.js, use the [official download page](https://nodejs.org/en/download).
+- [nvm](https://github.com/nvm-sh/nvm) with the exact Node.js version declared in `toolchains.env`. The launcher uses `NVM_DIR`, or `~/.nvm` when unset.
 
-Open Terminal by pressing Command-Space, typing `Terminal`, and pressing Enter. Paste each command block below into Terminal and press Enter. To check Node.js and npm, run:
-
-```sh
-node --version
-npm --version
-```
+The project selects its own Node.js and npm versions. System and shell-default upgrades do not upgrade this project. See [toolchain management](docs/toolchains.md) for setup and explicit upgrades.
 
 ## Install
 
-1. Open the [v0.1.0 release page](https://github.com/irootkernel/herdr-zcode/releases/tag/v0.1.0).
-2. Under **Assets**, download `herdr-zcode-0.1.0.tgz`. Leave it compressed. The source code archives are for developers.
-3. If your browser saved it in Downloads, run:
+From a source checkout containing the version-managed launcher, run:
 
 ```sh
-cd "$HOME/Downloads"
-npm install --global --prefix "$HOME/.local" ./herdr-zcode-0.1.0.tgz
+./dev setup
+./dev doctor --desktop
+./dev install
 export PATH="$HOME/.local/bin:$PATH"
 herdr-zcode --version
 ```
 
-The last command should print `herdr-zcode 0.1.0`. If the download is in another folder, open that folder in Terminal instead. To check the download, save `SHA256SUMS` from the release into the same folder and run `shasum -a 256 -c SHA256SUMS`.
+If the declared Node is missing, `setup` prints the exact `nvm install` command; run it and repeat `setup`. Setup prepares an isolated npm without changing global npm. `doctor --desktop` checks ZCode without reading your account.
+
+Installation copies the package to `~/.local`; repeat it after source changes. Previously published archives remain unchanged: the older v0.1.0 asset does not include this toolchain policy. Build a new archive with `./dev pack` and install it with `./dev npm install --global --prefix "$HOME/.local" /absolute/path/to/archive.tgz`.
 
 The `export` command makes herdr-zcode available in this Terminal window. For new windows, you can use its full path, `"$HOME/.local/bin/herdr-zcode"`, or add the same `export` line to your shell's startup file (`~/.zshrc` for the default macOS shell).
 
@@ -126,9 +122,9 @@ Herdr 0.9.5 requires pane commands to send input to custom agents. See the [Herd
 
 | Problem | What to check |
 | --- | --- |
-| `node` or `npm` is not found | Install Node.js, then open a new Terminal window. |
+| A pinned tool is missing or mismatched | Run `./dev setup` and `./dev doctor` from the source checkout. Follow the exact Node installation instruction when needed. |
 | `herdr-zcode` is not found | Run the `export PATH` command above or use `"$HOME/.local/bin/herdr-zcode"`. |
-| npm cannot find the package | Check that Terminal is in the folder containing the downloaded `.tgz` file. |
+| ZCode version does not match | Run `./dev doctor --desktop`. Prepare the declared app or explicitly upgrade its declarations. |
 | Startup or account error | Open ZCode Desktop, check your Coding Plan login, then restart herdr-zcode. Restart it after switching accounts. |
 | ZCode is installed elsewhere | Start with `herdr-zcode --app-bundle "/path/to/ZCode.app"`. |
 | Selected model is unavailable | Check that your account catalog offers `account:zai-individual-coding-plan/GLM-5.3`. The client reports an error instead of choosing another model. |

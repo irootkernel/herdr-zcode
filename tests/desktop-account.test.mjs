@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { desktopAccount, DEFAULT_MODEL } from '../lib/desktop-account.mjs';
 import { prepareDesktopRuntime } from '../lib/desktop-runtime.mjs';
+import { readToolchains } from '../lib/toolchain.mjs';
 
 const providerId = 'account:zai-individual-coding-plan';
 const selected = { providerId, modelId: 'GLM-5.3' };
@@ -24,7 +25,11 @@ async function fixture(t) {
   const directory = join(home, '.zcode/v2');
   const catalogPath = join(appBundle, 'Contents/Resources/config/provider/zcode-builtin.json');
   for (const dir of [directory, join(appBundle, 'Contents/MacOS'), join(appBundle, 'Contents/Resources/glm'), join(appBundle, 'Contents/Resources/config/provider')]) await mkdir(dir, { recursive: true });
-  await writeFile(join(appBundle, 'Contents/MacOS/ZCode'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const pins = readToolchains();
+  const executable = join(appBundle, 'Contents/MacOS/ZCode');
+  const runtime = JSON.stringify({ node: pins.ZCODE_NODE_VERSION, electron: pins.ZCODE_ELECTRON_VERSION, execPath: executable });
+  await writeFile(executable, '#!/bin/sh\nprintf \'%s\\n\' \'' + runtime.replaceAll("'", "'\\''") + "'\n", { mode: 0o755 });
+  await writeFile(join(appBundle, 'Contents/Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>' + pins.ZCODE_APP_VERSION + '</string><key>CFBundleVersion</key><string>' + pins.ZCODE_APP_BUILD + '</string></dict></plist>');
   await writeFile(join(appBundle, 'Contents/Resources/glm/zcode.cjs'), '// test');
   const catalog = { revision: 31, config: { providerConfigRules: { providerRules: [{ providerId, config: { builtinModelIds: ['GLM-5.3', 'GLM-5.3-Flash'], access: request.accountAccess } }] } } };
   await writeFile(catalogPath, JSON.stringify(catalog));

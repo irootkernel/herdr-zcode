@@ -4,7 +4,7 @@ import { resolve, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { testHerdrSession } from './helpers/herdr-session.mjs';
+import { testHerdrSession, quote } from './helpers/herdr-session.mjs';
 
 if (!process.argv.includes('--authorize-live')) throw new Error('Pass --authorize-live for real ZCode calls in a disposable Herdr session');
 const scenarioIndex = process.argv.indexOf('--scenario');
@@ -119,9 +119,10 @@ try {
     const code = join(cwd, 'sample.mjs');
     const initial = 'export const double = n => n * 3;\n';
     const expected = 'export const double = n => n * 2;\n';
+    const testCommand = quote(process.execPath) + ' --test sample.test.mjs';
     await writeFile(code, initial);
     await writeFile(join(cwd, 'sample.test.mjs'), 'import test from "node:test";\nimport assert from "node:assert/strict";\nimport { double } from "./sample.mjs";\ntest("double", () => { assert.equal(double(4), 8); assert.equal(double(-3), -6); });\n');
-    const before = await submit(pane, 'Fix sample.mjs so double multiplies by two, not three. Read the file, then use Edit to replace only 3 with 2 while preserving every other character. Do not modify sample.test.mjs or other files. Then use Bash exactly once with command node --test sample.test.mjs, from this working directory, to run the existing test. Do not invoke additional commands, network, or subagents. Wait for required approvals, then report the actual test result.');
+    const before = await submit(pane, 'Fix sample.mjs so double multiplies by two, not three. Read the file, then use Edit to replace only 3 with 2 while preserving every other character. Do not modify sample.test.mjs or other files. Then use Bash exactly once with command ' + testCommand + ', from this working directory, to run the existing test. Do not invoke additional commands, network, or subagents. Wait for required approvals, then report the actual test result.');
     const approved = new Set();
     let sawCode = false, sawBash = false;
     const end = performance.now() + 180000;
@@ -143,7 +144,7 @@ try {
             assert.equal(resolve(cwd, item.input.file_path || item.input.path), code);
             assert.equal(item.input.content, expected); sawCode = true;
           } else if (item.tool === 'Bash') {
-            assert.equal(item.input.command?.trim(), 'node --test sample.test.mjs'); sawBash = true;
+            assert.equal(item.input.command?.trim(), testCommand); sawBash = true;
           } else throw new Error('Unexpected requested tool: ' + item.tool);
           approved.add(item.id);
           await test.send(pane, '/allow ' + item.id);

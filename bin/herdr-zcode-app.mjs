@@ -8,6 +8,10 @@ import { AppServerController } from '../lib/app-server-controller.mjs';
 import { desktopAccount } from '../lib/desktop-account.mjs';
 import { prepareDesktopRuntime } from '../lib/desktop-runtime.mjs';
 import { createHerdrReporter } from '../lib/herdr-reporter.mjs';
+import { assertNode } from '../lib/toolchain.mjs';
+
+try { assertNode(); }
+catch (error) { console.error('herdr-zcode: ' + error.message); process.exit(1); }
 
 export function parseArgs(argv) {
   const options = { cwd: process.cwd(), mode: 'build' };
