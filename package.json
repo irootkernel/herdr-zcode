@@ -21,6 +21,7 @@
     "lib/app-server-client.mjs",
     "lib/app-server-controller.mjs",
     "lib/desktop-account.mjs",
+    "lib/desktop-keychain.mjs",
     "lib/desktop-runtime.mjs",
     "lib/herdr-reporter.mjs",
     "README.md",

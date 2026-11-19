@@ -11,7 +11,9 @@ import { prepareDesktopRuntime } from '../lib/desktop-runtime.mjs';
 if (!process.argv.includes('--authorize-live')) throw new Error('Pass --authorize-live to spend ZCode usage');
 const started = performance.now();
 const runtime = await prepareDesktopRuntime();
-const account = await desktopAccount(runtime.configPath, { env: runtime.env, home: runtime.home });
+const account = await desktopAccount(runtime.configPath, {
+  env: runtime.env, home: runtime.home, withOSCredentialReader: runtime.withOSCredentialReader,
+}).catch(async error => { await runtime.close(); throw error; });
 const cwd = join(dirname(runtime.configPath), 'workspace');
 await mkdir(cwd);
 const child = spawn(runtime.executable, runtime.args, { env: runtime.env, cwd, stdio: ['pipe', 'pipe', 'pipe'] });

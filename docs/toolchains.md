@@ -1,6 +1,6 @@
 # Toolchain management
 
-`toolchains.env` is the authority for exact execution versions. It contains CLI/development Node and npm versions, plus a separate ZCode app/build and embedded Node/Electron tuple. Values must be exact numeric versions; aliases and ranges are rejected. `package.json`'s `engines.node` remains a minimum compatibility declaration, not an execution selector. This change does not newly qualify that minimum version. There are currently no external package dependencies or dependency lockfiles. Add a lockfile when introducing dependencies; it does not pin the runtime.
+`toolchains.env` pins the CLI and development versions of Node and npm and declares the minimum version of ZCode Desktop. Use three numeric components for each declaration. `package.json`'s `engines.node` describes package compatibility. The launcher selects Node using `NODE_VERSION`. The project uses Node.js standard libraries and has no dependency lockfile.
 
 ## Prepare and inspect
 
@@ -8,7 +8,7 @@ Install nvm separately using its official instructions. Run `./dev setup` from t
 
 The Node location is `${NVM_DIR:-$HOME/.nvm}/versions/node/v<declared-version>/bin/node`. npm lives in `${XDG_CACHE_HOME:-$HOME/.cache}/herdr-zcode/toolchains/node-<version>/npm-<version>`. `HERDR_ZCODE_TOOLCHAIN_CACHE` can select a different cache root. Normal execution only reads prepared tools and fails if they are missing or mismatched. The CLI itself needs pinned Node; npm commands additionally need the prepared npm cache.
 
-`./dev doctor` reports declared versions, actual versions, and executable/real paths. `./dev doctor --desktop` additionally inspects the app at `HERDR_ZCODE_APP_BUNDLE` or `/Applications/ZCode.app`. The CLI also accepts `--app-bundle`. All selected apps must match the declared app/build/runtime tuple. Probes do not start a model session or read account credentials. An app update blocks startup until the declared app is restored or the upgrade is made explicit.
+`./dev doctor` reports declared versions, actual versions, and executable paths. `./dev doctor --desktop` also inspects the app at `HERDR_ZCODE_APP_BUNDLE` or `/Applications/ZCode.app`. The CLI accepts `--app-bundle` as well. Apps at or above `ZCODE_APP_MIN_VERSION` pass the version check. Doctor reports the actual app build and embedded Node and Electron versions for diagnosis. The probe checks the executable and runs without accessing credentials or starting a model session.
 
 ## Commands
 
@@ -30,9 +30,9 @@ The `test` and live test scripts check actual Node/npm versions in the command b
 
 ## Explicit upgrades
 
-1. Edit only the relevant values in `toolchains.env`. Keep host Node/npm and the ZCode tuple separate. ZCode's embedded Node/Electron are upgraded with the app, not independently installed.
-2. Run `./dev setup`; install the printed exact Node version through nvm if required. Prepare the declared ZCode app externally when changing its tuple.
-3. Run `./dev doctor --desktop`, `./dev test`, and `./dev pack`. Resolve compatibility failures separately; do not silently select another version.
+1. Edit the relevant values in `toolchains.env` when changing the pinned development tools. When adapting to a new ZCode Desktop release, set `ZCODE_APP_MIN_VERSION` to the release verified with that adapter. Newer releases can run the same compatibility checks. The embedded Node and Electron runtimes ship with ZCode Desktop.
+2. Run `./dev setup` for development tool upgrades. Install the exact Node version printed by setup through nvm if needed.
+3. Run `./dev doctor --desktop`, `./dev test`, and `./dev pack` to check the selected tools and package.
 4. Reinstall a standalone copy explicitly with `./dev install` when ready. Updating a checkout does not update an installed copy or published release assets.
 
 Test-owned scratch roots should be unique directories under `/tmp`, passed through `TEST_TMP_ROOT`. System Node, global npm, and shell defaults are not project version declarations. TypeScript, Bun, Deno, Go, Python, Rust, and Ruby are not used by the current repository's development or release entrypoints.

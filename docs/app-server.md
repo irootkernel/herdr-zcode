@@ -4,7 +4,7 @@ herdr-zcode is a line-oriented terminal client for ZCode Desktop's app-server. I
 
 ## Develop locally
 
-Use the exact tool versions in `toolchains.env`. From a checkout of this repository:
+Use the development tool versions in `toolchains.env`. Run these commands from a checkout:
 
 ```sh
 ./dev setup
@@ -39,6 +39,7 @@ To install a standalone copy of the checkout:
 | `lib/app-server-controller.mjs` | Session and turn state, prompt queues, interactions, background work, rendering, and cancellation. |
 | `lib/desktop-runtime.mjs` | Resolve the installed Electron runtime, prepare a temporary public provider catalog, and isolate the child environment. |
 | `lib/desktop-account.mjs` | Read the Desktop account, register its catalog overlay, select the model, answer matching authentication requests, and redact credentials. |
+| `lib/desktop-keychain.mjs` | Verify the ZCode signer and read Keychain-backed Desktop credentials on Apple Silicon macOS. |
 | `lib/herdr-reporter.mjs` | Send asynchronous status reports for one wrapper's server socket and pane. |
 
 ## Startup and protocol
@@ -47,7 +48,9 @@ Launch the app-owned Electron binary with `ELECTRON_RUN_AS_NODE=1` and the bundl
 
 Startup registers the account catalog revision, creates or resumes the session, verifies the exact available model, applies the requested reasoning level or the model's advertised default, and subscribes to session events. The default model ID is `account:zai-individual-coding-plan/GLM-5.3`. A `$level` suffix on `--model` follows ZCode's model-reference convention (`parseModelPickerValue`: the first `$` after the `/` starts the level; a `$` at the id start or end is literal) and sets `model.options.reasoningLevel` at `session/setModel`; without it the advertised `reasoning.defaultLevel` applies (GLM-5.3 advertises `low`, `high`, `max` and defaults to `max`). The server rejects a level absent from `reasoning.levels`, listing the supported values. Verify the model returned by both selection and subscription; do not silently substitute a model or infer an ID from its display name.
 
-Read Desktop v2 settings and the existing Coding Plan credentials on demand. Copy only the public provider catalog into temporary storage, bind both built-in and personal provider paths, and include the active catalog path digest in revision identity. Check the app version, build, and embedded Node/Electron against `toolchains.env` before catalog preparation or account access. App path overrides do not waive these checks. Return authentication only for matching provider/account-access requests. Account changes require restarting the session.
+Read Desktop v2 settings and the existing Coding Plan credentials on demand. Copy the public provider catalog into temporary storage, bind both built-in and personal provider paths, and include the active catalog path digest in revision identity. Check the selected app against `ZCODE_APP_MIN_VERSION` before preparing the catalog or reading the account. Report the observed build and embedded Node and Electron versions in `doctor --desktop`. Return authentication only for matching provider and account access requests. Account changes require restarting the session.
+
+The account reader supports plaintext, `enc:v1`, and Keychain-backed `enc:v2:os` on Apple Silicon macOS. For Keychain reads, verify the selected app and a temporary private copy of its native Keychain module. Pass the module by open descriptor to the signed ZCode executable, which uses the credential file's path-bound Keychain item to authenticate and decrypt the requested value. The encryption key stays inside that process. The decrypted value returns over a private pipe, and the temporary module is removed after the read.
 
 Do not write Desktop credentials, workspace model defaults, or personal provider settings. Strip inherited Herdr routing and legacy bridge credentials from the app-server environment. Unsupported optional host requests return explicit errors; Browser, Computer Use, and a full Desktop UI are outside this client's scope.
 

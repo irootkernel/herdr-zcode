@@ -8,7 +8,7 @@ herdr-zcode uses your existing ZCode Desktop account and tools. No separate API 
 
 You need:
 
-- macOS with ZCode Desktop installed, normally in `/Applications/ZCode.app`.
+- macOS with ZCode Desktop 3.18.2 or later, normally in `/Applications/ZCode.app`. Keychain-backed accounts require Apple Silicon.
 - A Z.AI Individual Coding Plan account signed in through ZCode Desktop.
 - [nvm](https://github.com/nvm-sh/nvm) with the exact Node.js version declared in `toolchains.env`. The launcher uses `NVM_DIR`, or `~/.nvm` when unset.
 
@@ -124,7 +124,7 @@ Herdr 0.9.5 requires pane commands to send input to custom agents. See the [Herd
 | --- | --- |
 | A pinned tool is missing or mismatched | Run `./dev setup` and `./dev doctor` from the source checkout. Follow the exact Node installation instruction when needed. |
 | `herdr-zcode` is not found | Run the `export PATH` command above or use `"$HOME/.local/bin/herdr-zcode"`. |
-| ZCode version does not match | Run `./dev doctor --desktop`. Prepare the declared app or explicitly upgrade its declarations. |
+| ZCode is below the minimum version | Run `./dev doctor --desktop` to check the minimum, then update ZCode Desktop. |
 | Startup or account error | Open ZCode Desktop, check your Coding Plan login, then restart herdr-zcode. Restart it after switching accounts. |
 | ZCode is installed elsewhere | Start with `herdr-zcode --app-bundle "/path/to/ZCode.app"`. |
 | Selected model is unavailable | Check that your account catalog offers `account:zai-individual-coding-plan/GLM-5.3`. The client reports an error instead of choosing another model. |

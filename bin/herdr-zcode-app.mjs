@@ -140,7 +140,9 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     for (const { content, prompt } of early) admit(content, prompt);
     if (eof) controller.eof();
     if (controller.closing) throw exitStartup;
-    const account = await (adapters.desktopAccount ?? desktopAccount)(runtime.configPath, { env, home: runtime.home, model: options.model });
+    const account = await (adapters.desktopAccount ?? desktopAccount)(runtime.configPath, {
+      env, home: runtime.home, model: options.model, withOSCredentialReader: runtime.withOSCredentialReader,
+    });
     controller.expectedModel = account.selection;
     redactor = account.createStreamRedactor?.() ?? {
       write: text => account.redact ? account.redact(text) : text, flush: () => '',

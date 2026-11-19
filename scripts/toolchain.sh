@@ -13,15 +13,15 @@ esac
 seen=' '
 while IFS='=' read -r key value || [ -n "$key" ]; do
   case "$key" in ''|\#*) continue ;; esac
-  case "$key" in NODE_VERSION|NPM_VERSION|ZCODE_APP_VERSION|ZCODE_NODE_VERSION|ZCODE_ELECTRON_VERSION) parts=3 ;; ZCODE_APP_BUILD) parts=4 ;; *) fail "Unknown toolchain key: $key" ;; esac
+  case "$key" in NODE_VERSION|NPM_VERSION|ZCODE_APP_MIN_VERSION) ;; *) fail "Unknown toolchain key: $key" ;; esac
   case "$seen" in *" $key "*) fail "Duplicate toolchain key: $key" ;; esac
   seen="$seen$key "
-  case "$value" in ''|*[!0-9.]*|.*|*.|*..*) fail "Invalid exact version for $key" ;; esac
-  count_parts() { oldifs=$IFS; IFS=.; set -- $1; IFS=$oldifs; [ "$#" -eq "$parts" ]; }
-  count_parts "$value" || fail "Invalid exact version for $key"
+  case "$value" in ''|*[!0-9.]*|.*|*.|*..*) fail "Invalid version for $key" ;; esac
+  count_parts() { oldifs=$IFS; IFS=.; set -- $1; IFS=$oldifs; [ "$#" -eq 3 ]; }
+  count_parts "$value" || fail "Invalid version for $key"
   case "$key" in NODE_VERSION) pinned_node_version=$value ;; esac
 done < "$root/toolchains.env"
-for key in NODE_VERSION NPM_VERSION ZCODE_APP_VERSION ZCODE_APP_BUILD ZCODE_NODE_VERSION ZCODE_ELECTRON_VERSION; do
+for key in NODE_VERSION NPM_VERSION ZCODE_APP_MIN_VERSION; do
   case "$seen" in *" $key "*) ;; *) fail "Missing toolchain key: $key" ;; esac
 done
 node_bin=${NVM_DIR:-$HOME/.nvm}/versions/node/v$pinned_node_version/bin/node

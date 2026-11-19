@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile as callback } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readToolchains } from '../lib/toolchain.mjs';
+import { inspectDesktop, readToolchains } from '../lib/toolchain.mjs';
 const exec = promisify(callback);
 const source = fileURLToPath(new URL('../', import.meta.url));
 const nvm = dirname(dirname(dirname(dirname(dirname(process.execPath)))));
@@ -33,10 +33,11 @@ test('launcher ignores ambient Node/npm and keeps help/account access separate',
 test('missing or malformed declarations fail without inherited environment fallback', async t => {
   const f = await fixture(t), manifest = join(f.root, 'toolchains.env');
   const original = await readFile(manifest, 'utf8');
-  for (const invalid of [original.replace(/^NODE_VERSION=.*\n/m, ''), original.replace(/^NODE_VERSION=.*$/m, 'NODE_VERSION=latest'), original + 'NODE_VERSION=1.2.3\n']) {
+  for (const invalid of [original.replace(/^NODE_VERSION=.*\n/m, ''), original.replace(/^NODE_VERSION=.*$/m, 'NODE_VERSION=latest'),
+    original + 'NODE_VERSION=1.2.3\n', original.replace(/^ZCODE_APP_MIN_VERSION=(.+)$/m, 'ZCODE_APP_MIN_VERSION=>=$1')]) {
     await writeFile(manifest, invalid);
     assert.throws(() => readToolchains(manifest));
-    await assert.rejects(exec(join(f.root, 'dev'), ['run', '--version'], { env: f.env }), /toolchain|exact version/);
+    await assert.rejects(exec(join(f.root, 'dev'), ['run', '--version'], { env: f.env }), /toolchain|Invalid version/);
   }
   await rm(manifest);
   await assert.rejects(exec(join(f.root, 'dev'), ['run', '--version'], { env: f.env }), /Missing toolchains.env/);
@@ -60,22 +61,31 @@ test('direct entry and npm lifecycle guard reject wrong tool versions', async t 
     env: { ...f.env, npm_execpath: fakeNpm, npm_node_execpath: process.execPath },
   }), /Expected npm .*actual 0.0.0/);
 });
-test('Desktop mismatch is rejected before any temporary catalog is created', async t => {
+test('Desktop minimum gates startup and newer builds keep their reported runtime versions', async t => {
   const f = await fixture(t);
   const bundle = join(f.root, 'ZCode.app'); await mkdir(join(bundle, 'Contents/MacOS'), { recursive: true });
-  const pins = readToolchains(), executable = join(bundle, 'Contents/MacOS/ZCode');
-  await writeFile(join(bundle, 'Contents/Info.plist'), '<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>' + pins.ZCODE_APP_VERSION + '</string><key>CFBundleVersion</key><string>' + pins.ZCODE_APP_BUILD + '</string></dict></plist>');
-  for (const mismatch of [
-    { node: '0.0.0', electron: pins.ZCODE_ELECTRON_VERSION },
-    { node: pins.ZCODE_NODE_VERSION, electron: '0.0.0' },
-    { node: pins.ZCODE_NODE_VERSION, electron: pins.ZCODE_ELECTRON_VERSION, app: '0.0.0' },
-    { node: pins.ZCODE_NODE_VERSION, electron: pins.ZCODE_ELECTRON_VERSION, build: '0.0.0.0' },
+  const executable = join(bundle, 'Contents/MacOS/ZCode');
+  const { ZCODE_APP_MIN_VERSION: minimum } = readToolchains();
+  const [major, minor, patch] = minimum.split('.').map(BigInt);
+  const writeVersion = (app, build) => writeFile(join(bundle, 'Contents/Info.plist'),
+    `<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>${app}</string><key>CFBundleVersion</key><string>${build}</string></dict></plist>`);
+  const { prepareDesktopRuntime } = await import('../lib/desktop-runtime.mjs');
+  const before = await readdir(f.root);
+  await writeVersion('0.0.0', '1');
+  await assert.rejects(prepareDesktopRuntime({ appBundle: bundle, tmpRoot: f.root }), /ZCode Desktop requires .* or newer/);
+  assert.deepEqual(await readdir(f.root), before);
+  for (const app of ['3.9.99', '3.17.2', '3.18.1']) {
+    await writeVersion(app, '1');
+    await assert.rejects(inspectDesktop(bundle), { message: `ZCode Desktop requires ${minimum} or newer; found ${app} at ${executable}` });
+  }
+  for (const [app, build, node, electron] of [
+    [minimum, '10443', '24.21.0', '44.7.0'],
+    [`${major}.${minor}.${patch + 1n}`, '10444', '25.0.0', '45.0.0'],
+    [`${major}.${minor + 100n}.0`, 'future-build', '30.0.0', '50.0.0'],
   ]) {
-    await writeFile(join(bundle, 'Contents/Info.plist'), '<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>' + (mismatch.app || pins.ZCODE_APP_VERSION) + '</string><key>CFBundleVersion</key><string>' + (mismatch.build || pins.ZCODE_APP_BUILD) + '</string></dict></plist>');
-    await writeFile(executable, '#!/bin/sh\ncat <<\'JSON\'\n' + JSON.stringify({ ...mismatch, execPath: executable }) + '\nJSON\n', { mode: 0o755 });
-    const { prepareDesktopRuntime } = await import('../lib/desktop-runtime.mjs');
-    const before = await readdir(f.root);
-    await assert.rejects(prepareDesktopRuntime({ appBundle: bundle, tmpRoot: f.root }), /ZCode (app|build|node|electron): expected/);
-    assert.deepEqual(await readdir(f.root), before);
+    await writeVersion(app, build);
+    await writeFile(executable, '#!/bin/sh\ncat <<\'JSON\'\n' + JSON.stringify({ node, electron, execPath: executable }) + '\nJSON\n', { mode: 0o755 });
+    const observed = await inspectDesktop(bundle);
+    assert.deepEqual([observed.minimum, observed.app, observed.build, observed.node, observed.electron], [minimum, app, build, node, electron]);
   }
 });

@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, readFile, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { desktopAccount, DEFAULT_MODEL } from '../lib/desktop-account.mjs';
 import { prepareDesktopRuntime } from '../lib/desktop-runtime.mjs';
+import { keychainCipherScript, OS_CREDENTIAL_PREFIX } from '../lib/desktop-keychain.mjs';
 import { readToolchains } from '../lib/toolchain.mjs';
 
 const providerId = 'account:zai-individual-coding-plan';
@@ -27,9 +29,9 @@ async function fixture(t) {
   for (const dir of [directory, join(appBundle, 'Contents/MacOS'), join(appBundle, 'Contents/Resources/glm'), join(appBundle, 'Contents/Resources/config/provider')]) await mkdir(dir, { recursive: true });
   const pins = readToolchains();
   const executable = join(appBundle, 'Contents/MacOS/ZCode');
-  const runtime = JSON.stringify({ node: pins.ZCODE_NODE_VERSION, electron: pins.ZCODE_ELECTRON_VERSION, execPath: executable });
+  const runtime = JSON.stringify({ node: '24.21.0', electron: '44.7.0', execPath: executable });
   await writeFile(executable, '#!/bin/sh\nprintf \'%s\\n\' \'' + runtime.replaceAll("'", "'\\''") + "'\n", { mode: 0o755 });
-  await writeFile(join(appBundle, 'Contents/Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>' + pins.ZCODE_APP_VERSION + '</string><key>CFBundleVersion</key><string>' + pins.ZCODE_APP_BUILD + '</string></dict></plist>');
+  await writeFile(join(appBundle, 'Contents/Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>' + pins.ZCODE_APP_MIN_VERSION + '</string><key>CFBundleVersion</key><string>fixture-build</string></dict></plist>');
   await writeFile(join(appBundle, 'Contents/Resources/glm/zcode.cjs'), '// test');
   const catalog = { revision: 31, config: { providerConfigRules: { providerRules: [{ providerId, config: { builtinModelIds: ['GLM-5.3', 'GLM-5.3-Flash'], access: request.accountAccess } }] } } };
   await writeFile(catalogPath, JSON.stringify(catalog));
@@ -119,6 +121,81 @@ test('native Desktop credential fallback matches platform, native home and usern
   assert.equal((await account.runtimeHeaders(request)).requestAuth.apiKey, 'native-fallback-key');
 });
 
+const fixtureKey = Buffer.alloc(32, 0x42);
+function keychainEnvelope(text, { invalidTag = false, fingerprint = digest(fixtureKey).slice(0, 24) } = {}) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', fixtureKey, iv);
+  const ciphertext = Buffer.concat([cipher.update(text), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  if (invalidTag) tag[0] ^= 1;
+  return OS_CREDENTIAL_PREFIX + fingerprint + ':' + [iv, tag, ciphertext].map(part => part.toString('base64url')).join('.');
+}
+
+function runKeychainCipher(ciphertext, readKey = '() => process.argv[1]') {
+  const script = keychainCipherScript + `readCredential(${readKey}).catch(() => { process.exitCode = 1; });`;
+  return spawnSync(process.execPath, ['-e', script, fixtureKey.toString('base64url')], {
+    input: ciphertext, encoding: 'utf8', timeout: 3000, env: {},
+  });
+}
+
+test('Keychain cipher returns plaintext only when the envelope and key authenticate', () => {
+  const secret = 'synthetic-coding-plan-secret';
+  const good = keychainEnvelope(secret);
+  const decrypted = runKeychainCipher(good);
+  assert.equal(decrypted.status, 0);
+  assert.equal(decrypted.stdout, secret);
+  for (const [ciphertext, keyReader] of [
+    [good + '\n'],
+    [keychainEnvelope(secret, { fingerprint: '0'.repeat(24) })],
+    [keychainEnvelope(secret, { invalidTag: true })],
+    [good, '() => { throw new Error(process.argv[1]); }'],
+  ]) {
+    const denied = runKeychainCipher(ciphertext, keyReader);
+    assert.equal(denied.status, 1);
+    assert.equal(denied.stdout + denied.stderr, '');
+  }
+});
+
+test('Keychain credentials bind the account, refresh and redact keys, and reject unavailable auth', async t => {
+  const f = await fixture(t);
+  const reads = [];
+  const withOSCredentialReader = async (path, useReader) => {
+    assert.equal(path, f.credentialsPath);
+    const transaction = [];
+    reads.push(transaction);
+    return useReader(async value => {
+      transaction.push(value);
+      const result = runKeychainCipher(value);
+      if (result.status !== 0) throw new Error('Authentication failed');
+      return result.stdout;
+    });
+  };
+  const set = async (identity, key, profile = keychainEnvelope(JSON.stringify({ id: identity }))) => {
+    await writeFile(f.credentialsPath, JSON.stringify({
+      'oauth:zai:user_info': profile,
+      [`account-provider:coding-plan:${providerId}:account:${encodeURIComponent(identity)}:api-key`]: key,
+    }));
+  };
+  await set('fixture/account', keychainEnvelope('previous-key'));
+  await assert.rejects(desktopAccount(f.catalogPath, f.options), /profile is unavailable/);
+  const account = await desktopAccount(f.catalogPath, { ...f.options, withOSCredentialReader });
+  assert.deepEqual(reads.map(batch => batch.length), [2]);
+  assert.equal(JSON.stringify(account.config).includes('previous-key'), false);
+  assert.equal((await account.runtimeHeaders({ ...request, providerId: 'wrong-provider' })).headersApplied, false);
+  assert.equal(reads.length, 1);
+  await set('fixture/account', keychainEnvelope('rotated-key'), JSON.stringify({ id: 'fixture/account' }));
+  assert.deepEqual(await account.runtimeHeaders(request), { headersApplied: true, requestAuth: { apiKey: 'rotated-key' } });
+  assert.equal(account.redact('previous-key rotated-key'), '[REDACTED] [REDACTED]');
+  assert.equal(reads.at(-1).length, 1);
+  await set('fixture/account', keychainEnvelope('bad-tag', { invalidTag: true }));
+  assert.equal((await account.runtimeHeaders(request)).requestAuth, undefined);
+  await set('fixture/account', 'enc:v99:unrecognized');
+  assert.equal((await account.runtimeHeaders(request)).requestAuth, undefined);
+  await set('new-account', keychainEnvelope('other-key'));
+  assert.equal((await account.runtimeHeaders(request)).requestAuth, undefined);
+  assert.equal(reads.at(-1).length, 1);
+});
+
 test('runtime binds a per-executor public catalog path and cleans up without touching Desktop files', async t => {
   const f = await fixture(t);
   const originalCatalog = await readFile(f.catalogPath, 'utf8');
@@ -137,6 +214,11 @@ test('runtime binds a per-executor public catalog path and cleans up without tou
     assert.equal(await readFile(first.configPath, 'utf8'), originalCatalog);
     const account = await desktopAccount(first.configPath, f.options);
     assert.ok(account.config.basedOnZCodeBuiltinRevision.endsWith(digest(first.configPath)));
+    if (first.withOSCredentialReader) {
+      await assert.rejects(first.withOSCredentialReader(f.credentialsPath, () => {
+        assert.fail('Unsigned Desktop bundle cannot read Keychain credentials');
+      }), /Keychain signature verification failed/);
+    }
     await first.close();
     await assert.rejects(access(first.configPath));
     await access(second.configPath);
