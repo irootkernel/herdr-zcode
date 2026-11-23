@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { readFile, realpath } from 'node:fs/promises';
 import { AppServerClient, safeErrorSummary } from '../lib/app-server-client.mjs';
 import { AppServerController } from '../lib/app-server-controller.mjs';
-import { desktopAccount } from '../lib/desktop-account.mjs';
+import { desktopAccount, projectedAccount } from '../lib/desktop-account.mjs';
 import { appServerEnvironment, prepareDesktopRuntime } from '../lib/desktop-runtime.mjs';
 import { classifyFailure } from '../lib/error-classification.mjs';
 import { createRuntimeProfile, RUNTIMES } from '../lib/runtime-profile.mjs';
@@ -23,6 +23,7 @@ export function parseArgs(argv) {
     if (arg === '--json') { options.json = true; continue; }
     if (arg === '--no-copy-catalog') { options.copyCatalog = false; continue; }
     if (arg === '--skip-desktop-inspect') { options.skipDesktopInspect = true; continue; }
+    if (arg === '--consume-auth-file') { options.consumeAuthFile = true; continue; }
     if (arg === '--non-interactive') { options.nonInteractive = true; continue; }
     if (arg === '--runtime') {
       const runtime = argv[++i];
@@ -30,7 +31,7 @@ export function parseArgs(argv) {
       options.runtime = runtime;
       continue;
     }
-    if (!['--cwd', '--model', '--mode', '--resume', '--prompt-file', '--app-bundle', '--runtime-dir'].includes(arg) || !argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error('Invalid command arguments');
+    if (!['--cwd', '--model', '--mode', '--resume', '--prompt-file', '--app-bundle', '--runtime-dir', '--auth-file'].includes(arg) || !argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error('Invalid command arguments');
     options[arg.slice(2)] = argv[++i];
   }
   // ZCode's own model-reference convention: a `$level` suffix after the first
@@ -46,6 +47,7 @@ export function parseArgs(argv) {
   options.cwd = resolve(options.cwd);
   if (!['plan', 'build', 'edit', 'guarded', 'yolo', 'auto'].includes(options.mode)) throw new Error('Use mode plan, build, edit, guarded, yolo, or auto');
   if (options.json && !options.version) throw new Error('--json requires --version');
+  if (options.consumeAuthFile && !options['auth-file']) throw new Error('--consume-auth-file requires --auth-file');
   return options;
 }
 
@@ -68,7 +70,7 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     return 0;
   }
   if (options.help) {
-    write('herdr-zcode [--cwd <path>] [--model <provider/model[$level]>] [--mode <mode>] [--resume <session>]\n[--runtime <tui|core>] [--non-interactive] [--prompt-file <path>] [--app-bundle <path>]\n[--runtime-dir <path>] [--no-copy-catalog] [--skip-desktop-inspect] [--version [--json]] [--bridge-help]\nThe default runtime is tui. With --non-interactive, core reports startup failures through OSC 7501.\nModes use native ZCode semantics: plan, build (default), edit, guarded, yolo, auto. Only explicit --mode changes the default.\nA $level suffix on --model, such as GLM-5.3$high, overrides the model\'s advertised default reasoning level.\nPrompt text or /help. EOF drains queued work; /exit cancels. Ctrl-C stops active work; idle Ctrl-C quits.\n');
+    write('herdr-zcode [--cwd <path>] [--model <provider/model[$level]>] [--mode <mode>] [--resume <session>]\n[--runtime <tui|core>] [--non-interactive] [--prompt-file <path>] [--app-bundle <path>]\n[--runtime-dir <path>] [--no-copy-catalog] [--skip-desktop-inspect] [--auth-file <path> [--consume-auth-file]]\n[--version [--json]] [--bridge-help]\nThe default runtime is tui. With --non-interactive, core reports startup failures through OSC 7501.\nModes use native ZCode semantics: plan, build (default), edit, guarded, yolo, auto. Only explicit --mode changes the default.\nA $level suffix on --model, such as GLM-5.3$high, overrides the model\'s advertised default reasoning level.\nPrompt text or /help. EOF drains queued work; /exit cancels. Ctrl-C stops active work; idle Ctrl-C quits.\n');
     return 0;
   }
   const early = [];
@@ -154,8 +156,9 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     let prompt;
     if (options['prompt-file']) prompt = await readFile(resolve(options.cwd, options['prompt-file']), 'utf8');
     if (profile.name === 'tui') reporter = profile.createReporter();
+    const authFile = options['auth-file'];
     runtime = await (adapters.prepareDesktopRuntime ?? prepareDesktopRuntime)({ env, appBundle: options['app-bundle'],
-      tmpRoot: options['runtime-dir'], copyCatalog: options.copyCatalog, skipInspect: options.skipDesktopInspect });
+      tmpRoot: options['runtime-dir'], copyCatalog: options.copyCatalog, skipInspect: options.skipDesktopInspect, useKeychain: !authFile });
     if (profile.fastTeardown && signalCode) throw exitStartup;
     // Remove terminal routing and hook credentials even from custom adapters.
     const childEnv = appServerEnvironment(runtime.env);
@@ -175,9 +178,13 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     for (const { content, prompt } of early) admit(content, prompt);
     if (eof) controller.eof();
     if (controller.closing) throw exitStartup;
-    const account = await (adapters.desktopAccount ?? desktopAccount)(runtime.configPath, {
-      env, home: runtime.home, model: options.model, withOSCredentialReader: runtime.withOSCredentialReader,
-    });
+    const account = authFile
+      ? await (adapters.projectedAccount ?? projectedAccount)(runtime.configPath, resolve(options.cwd, authFile), {
+        model: options.model, consume: options.consumeAuthFile,
+      })
+      : await (adapters.desktopAccount ?? desktopAccount)(runtime.configPath, {
+        env, home: runtime.home, model: options.model, withOSCredentialReader: runtime.withOSCredentialReader,
+      });
     controller.expectedModel = account.selection;
     redactor = account.createStreamRedactor?.() ?? {
       write: text => account.redact ? account.redact(text) : text, flush: () => '',

@@ -1,5 +1,8 @@
 import readline from 'node:readline';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 const scenario = process.env.TEST_SCENARIO || 'normal';
 if (scenario === 'hang-cleanup' || scenario === 'hang-bootstrap') process.on('SIGTERM', () => {});
 const turnFailures = {
@@ -156,10 +159,19 @@ rl.on('line', line => {
         assert.equal(process.env.HERDR_ZCODE_TOKEN, undefined);
         assert.equal(process.env.HERDR_ZCODE_SOCKET, undefined);
         assert.ok(Object.keys(process.env).every(key => !key.startsWith('HC_') && !key.startsWith('HERDR_')));
-        assert.equal(p.basedOnZCodeBuiltinRevision, 'zcode-builtin:7:active-path-digest');
+        if (scenario === 'projected-auth') {
+          const { HOME, ZCODE_DATA_BASE_DIR, ZCODE_PERSONAL_PROVIDER_CONFIG_FILE, ZCODE_BUILTIN_PROVIDER_CONFIG_FILE } = process.env;
+          assert.equal(existsSync(process.env.TEST_PROJECTED_AUTH_FILE), false);
+          assert.equal(ZCODE_DATA_BASE_DIR, HOME);
+          assert.equal(ZCODE_PERSONAL_PROVIDER_CONFIG_FILE, join(HOME, '.zcode/v2/provider_config.json'));
+          const digest = createHash('sha256').update(ZCODE_BUILTIN_PROVIDER_CONFIG_FILE).digest('hex');
+          assert.equal(p.basedOnZCodeBuiltinRevision, `zcode-builtin:31:${digest}`);
+        } else assert.equal(p.basedOnZCodeBuiltinRevision, 'zcode-builtin:7:active-path-digest');
         const prefs = await reverse('session/requestRuntimePreferences', {}, m.id);
         assert.equal(prefs.askUserQuestionAutoResolutionEnabled, false);
-        const auth = await reverse('interaction/requestProviderRuntimeHeaders', {});
+        const request = scenario === 'projected-auth' ? { providerId: available[0].ref.providerId,
+          accountAccess: { type: 'zhipu-account', mode: 'individual-coding-plan', accountType: 'zai' } } : {};
+        const auth = await reverse('interaction/requestProviderRuntimeHeaders', request);
         assert.equal(auth.requestAuth.apiKey, 'header-secret');
         if (scenario === 'startup-auth') {
           send({ id: m.id, error: { code: -32001, data: { attribution: { statusCode: 401, reason: 'auth_failed' } }, message: 'header-secret auth body' } });

@@ -49,6 +49,8 @@ herdr-zcode --cwd "$HOME/herdr-zcode-demo"
 
 Use `--runtime core` in a herdr-core pane to report state through OSC 7501. In that runtime, `SIGHUP` and `SIGTERM` stop the app-server without waiting for session shutdown RPCs. Add `--non-interactive` to expose startup failures through OSC status.
 
+In an isolated session, use `--auth-file <path>` to provide a projected Z.AI Coding Plan credential. Supply an owner-readable private JSON file. Add `--consume-auth-file` when the wrapper should remove that file before launching the app-server. Use a disposable copy for consumption. See [projected account authentication](docs/app-server.md#projected-account-authentication) for the file format and lifecycle.
+
 Type this request into herdr-zcode and press Enter:
 
 ```text

@@ -40,7 +40,7 @@ To install a standalone copy of the checkout:
 | `lib/error-classification.mjs` | Classify failures as quota, rate limit, authentication, permission, or general errors and return safe diagnostics. |
 | `lib/runtime-profile.mjs` | Select the explicit CLI runtime and adapt canonical status to the legacy Herdr reporter. |
 | `lib/desktop-runtime.mjs` | Resolve the installed Electron runtime, prepare a temporary public provider catalog, and isolate the child environment. |
-| `lib/desktop-account.mjs` | Read the Desktop account, register its catalog overlay, select the model, answer matching authentication requests, and redact credentials. |
+| `lib/desktop-account.mjs` | Load Desktop or projected credentials and share the account overlay, model validation, authentication responses, and stream redaction. |
 | `lib/desktop-keychain.mjs` | Verify the ZCode signer and read Keychain-backed Desktop credentials on Apple Silicon macOS. |
 | `lib/herdr-reporter.mjs` | Send asynchronous status reports for one wrapper's server socket and pane. |
 | `lib/osc7501-reporter.mjs` | Emit fixed state and block-kind frames for herdr-core. |
@@ -56,6 +56,23 @@ Read Desktop v2 settings and the existing Coding Plan credentials on demand. By 
 The account reader supports plaintext, `enc:v1`, and Keychain-backed `enc:v2:os` on Apple Silicon macOS. For Keychain reads, verify the selected app and a temporary private copy of its native Keychain module. Pass the module by open descriptor to the signed ZCode executable, which uses the credential file's path-bound Keychain item to authenticate and decrypt the requested value. The encryption key stays inside that process. The decrypted value returns over a private pipe, and the temporary module is removed after the read.
 
 Do not write Desktop credentials, workspace model defaults, or personal provider settings. Strip inherited `HC_*` and `HERDR_*` routing and legacy bridge credentials from the app-server environment. Unsupported optional host requests return explicit errors; Browser, Computer Use, and a full Desktop UI are outside this client's scope.
+
+## Projected account authentication
+
+`--auth-file <path>` selects a projected Z.AI Coding Plan credential. Relative paths resolve against `--cwd`. The file must be a regular, single-linked, owner-readable file owned by the invoking user, with group and other permissions clear and at most 64 KiB. Symlinks are rejected. A `0600` file is the usual representation. The UTF-8 JSON must provide `providerId`, `identity`, and `apiKey`. The optional `accountAccess` defaults to the object below.
+
+```json
+{
+  "providerId": "account:zai-individual-coding-plan",
+  "identity": "example-account",
+  "apiKey": "example-placeholder",
+  "accountAccess": { "type": "zhipu-account", "mode": "individual-coding-plan", "accountType": "zai" }
+}
+```
+
+The wrapper validates the file and provider against the bundled catalog. Only matching app-server authentication requests can use the in-memory key, and the same redactor protects streamed output in both account modes. `--consume-auth-file` requires `--auth-file`. It overwrites a writable file through its validated open descriptor before unlinking it. A read-only file can be unlinked without being overwritten. Any consumption error stops startup before the app-server spawns.
+
+Projected mode uses a private temporary app state directory and a personal catalog path inside it. It does not read the native Desktop account or construct a Keychain reader. The child inherits the caller's `TMPDIR`, while its home and ZCode data locations point to the private state directory. `--no-copy-catalog` keeps the bundled catalog at its original path and still creates the disposable app state. The wrapper removes that state after the app-server exits or a startup failure stops the launch.
 
 ## Input and interaction contract
 
