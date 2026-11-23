@@ -37,6 +37,8 @@ To install a standalone copy of the checkout:
 | `bin/herdr-zcode-app.mjs` | CLI arguments, input admission during startup, terminal signals and paste handling, bootstrap, and cleanup orchestration. |
 | `lib/app-server-client.mjs` | Child process ownership, NDJSON transport, outbound RPC correlation, reverse requests, timeouts, and process termination. |
 | `lib/app-server-controller.mjs` | Session and turn state, prompt queues, interactions, background work, rendering, and cancellation. |
+| `lib/error-classification.mjs` | Classify failures as quota, rate limit, authentication, permission, or general errors and return safe diagnostics. |
+| `lib/runtime-profile.mjs` | Select the explicit CLI runtime and adapt canonical status to the legacy Herdr reporter. |
 | `lib/desktop-runtime.mjs` | Resolve the installed Electron runtime, prepare a temporary public provider catalog, and isolate the child environment. |
 | `lib/desktop-account.mjs` | Read the Desktop account, register its catalog overlay, select the model, answer matching authentication requests, and redact credentials. |
 | `lib/desktop-keychain.mjs` | Verify the ZCode signer and read Keychain-backed Desktop credentials on Apple Silicon macOS. |
@@ -62,7 +64,11 @@ Permission options come from the server. `/allow <id>` selects only an advertise
 
 ## State and lifecycle invariants
 
-One controller owns the current session and turn, pending interactions, and known active background work. Ignore foreign sessions and correlate terminal events with the submitted turn when IDs exist. Pending interactions keep state `blocked`; active work is `working`, input readiness is `idle`, and ambiguous or disconnected state is `unknown`. Native child events must not complete the parent turn.
+One controller owns the current session and turn, pending interactions, and known active background work. Ignore foreign sessions and correlate terminal events with the submitted turn when IDs exist. Native child events must not complete the parent turn.
+
+`AppServerController.status()` describes the session and turn with `starting`, `idle`, `working`, `done`, `blocked`, `error`, or `unknown`. A `blocked` status identifies a pending permission or question, or a classified failure. Pending interactions take precedence over active work and the last turn outcome. A new turn clears that outcome. The `tui` runtime projects the snapshot into the existing `controller.state()` and reporter contract. A finished turn, including a failed turn with the session still accepting input, returns the TUI to `idle`.
+
+An explicit RPC rejection retains its terminal failure status while the TUI reports `unknown` during teardown. An ambiguous transport failure reports `unknown` in both views. The current `core` profile bypasses legacy Herdr reporting and exposes a reporter adapter seam for the upcoming OSC 7501 implementation.
 
 A newer authoritative permission snapshot removes obsolete snapshot-only registrations. A delayed snapshot must not remove a request observed through a live event or reverse RPC. Missing snapshot fields are not empty lists, and an unanswered bootstrap registration without a response channel must not keep the client blocked.
 

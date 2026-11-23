@@ -7,18 +7,24 @@ import { AppServerClient, safeErrorSummary } from '../lib/app-server-client.mjs'
 import { AppServerController } from '../lib/app-server-controller.mjs';
 import { desktopAccount } from '../lib/desktop-account.mjs';
 import { prepareDesktopRuntime } from '../lib/desktop-runtime.mjs';
-import { createHerdrReporter } from '../lib/herdr-reporter.mjs';
+import { createRuntimeProfile, RUNTIMES } from '../lib/runtime-profile.mjs';
 import { assertNode } from '../lib/toolchain.mjs';
 
 try { assertNode(); }
 catch (error) { console.error('herdr-zcode: ' + error.message); process.exit(1); }
 
 export function parseArgs(argv) {
-  const options = { cwd: process.cwd(), mode: 'build' };
+  const options = { cwd: process.cwd(), mode: 'build', runtime: 'tui' };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (['--help', '-h', '--bridge-help'].includes(arg)) { options.help = true; continue; }
     if (arg === '--version') { options.version = true; continue; }
+    if (arg === '--runtime') {
+      const runtime = argv[++i];
+      if (!RUNTIMES.includes(runtime)) throw new Error('Use runtime tui or core');
+      options.runtime = runtime;
+      continue;
+    }
     if (!['--cwd', '--model', '--mode', '--resume', '--prompt-file', '--app-bundle'].includes(arg) || !argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error('Invalid command arguments');
     options[arg.slice(2)] = argv[++i];
   }
@@ -53,7 +59,7 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     return 0;
   }
   if (options.help) {
-    write('herdr-zcode [--cwd <path>] [--model <provider/model[$level]>] [--mode <mode>] [--resume <session>]\n[--prompt-file <path>] [--app-bundle <path>] [--version] [--bridge-help]\nModes use native ZCode semantics: plan, build (default), edit, guarded, yolo, auto. Only explicit --mode changes the default.\nA $level suffix on --model, such as GLM-5.3$high, overrides the model\'s advertised default reasoning level.\nPrompt text or /help. EOF drains queued work; /exit cancels. Ctrl-C stops active work; idle Ctrl-C quits.\n');
+    write('herdr-zcode [--cwd <path>] [--model <provider/model[$level]>] [--mode <mode>] [--resume <session>]\n[--runtime <tui|core>] [--prompt-file <path>] [--app-bundle <path>] [--version] [--bridge-help]\nThe default runtime is tui.\nModes use native ZCode semantics: plan, build (default), edit, guarded, yolo, auto. Only explicit --mode changes the default.\nA $level suffix on --model, such as GLM-5.3$high, overrides the model\'s advertised default reasoning level.\nPrompt text or /help. EOF drains queued work; /exit cancels. Ctrl-C stops active work; idle Ctrl-C quits.\n');
     return 0;
   }
   const early = [];
@@ -120,7 +126,7 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     if (rl.terminal) { bracketedEnabled = true; write('\x1b[?2004h'); }
     let prompt;
     if (options['prompt-file']) prompt = await readFile(resolve(options.cwd, options['prompt-file']), 'utf8');
-    reporter = (adapters.createHerdrReporter ?? createHerdrReporter)({ env });
+    reporter = createRuntimeProfile(options.runtime, { env, output, flushOutput, adapters }).createReporter();
     runtime = await (adapters.prepareDesktopRuntime ?? prepareDesktopRuntime)({ env, appBundle: options['app-bundle'] });
     // Do not give the app-server any Herdr route or legacy hook credentials.
     const childEnv = { ...runtime.env, ELECTRON_RUN_AS_NODE: '1' };
@@ -196,7 +202,7 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     try { await client?.terminate(adapters.exitTimeout); exited = true; }
     catch { failed = true; errorOutput.write('App-server exit not observed; reporter ownership retained.\n'); }
     if (exited) {
-      try { await reporter?.close(); }
+      try { await reporter?.close?.(); }
       catch { failed = true; errorOutput.write('Herdr reporter release failed.\n'); }
       try { await runtime?.close?.(); }
       catch { failed = true; errorOutput.write('Runtime cleanup failed.\n'); }

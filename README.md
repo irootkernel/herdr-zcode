@@ -43,6 +43,8 @@ herdr-zcode --cwd "$HOME/herdr-zcode-demo"
 
 `--cwd` chooses the folder ZCode will work in. After startup, you should see the selected model, a session ID, and `Type /help for commands.`
 
+`--runtime tui` explicitly selects the default interactive runtime. Runtime selection is explicit even inside a Herdr pane.
+
 Type this request into herdr-zcode and press Enter:
 
 ```text

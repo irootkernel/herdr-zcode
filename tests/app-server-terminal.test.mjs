@@ -53,6 +53,16 @@ test('real entrypoint captures early piped prompts/EOF, bootstraps, renders two 
   assert.match(result.err, /report idle/);
 });
 
+test('core entrypoint runs a turn without the legacy Herdr reporter', async () => {
+  const app = launch('normal', ['--runtime', 'core']);
+  app.child.stdin.end('first prompt\n');
+  const result = await app.result;
+  assert.equal(result.code, 0, result.out + '\n' + result.err);
+  assert.match(result.out, /Reply 1/);
+  assert.match(result.err, /\[child exited\]/);
+  assert.doesNotMatch(result.err, /\[report(?: |er released)/);
+});
+
 test('permission allow/deny, simultaneous requests and reannouncement remain responsive during a turn', async () => {
   const app = launch('permissions'); app.send('permissions');
   await app.wait('[permission] p2');
