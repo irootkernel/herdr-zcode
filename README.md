@@ -10,7 +10,7 @@ You need:
 
 - macOS with ZCode Desktop 3.18.2 or later, normally in `/Applications/ZCode.app`. Keychain-backed accounts require Apple Silicon.
 - A Z.AI Individual Coding Plan account signed in through ZCode Desktop.
-- [nvm](https://github.com/nvm-sh/nvm) with the exact Node.js version declared in `toolchains.env`. The launcher uses `NVM_DIR`, or `~/.nvm` when unset.
+- [nvm](https://github.com/nvm-sh/nvm) with the exact Node.js version declared in `toolchains.env` when building or installing from the checkout.
 
 The project selects its own Node.js and npm versions. System and shell-default upgrades do not upgrade this project. See [toolchain management](docs/toolchains.md) for setup and explicit upgrades.
 
@@ -29,6 +29,8 @@ herdr-zcode --version
 If the declared Node is missing, `setup` prints the exact `nvm install` command; run it and repeat `setup`. Setup prepares an isolated npm without changing global npm. `doctor --desktop` checks ZCode without reading your account.
 
 Installation copies the package to `~/.local`; repeat it after source changes. Previously published archives remain unchanged: the older v0.1.0 asset does not include this toolchain policy. Build a new archive with `./dev pack` and install it with `./dev npm install --global --prefix "$HOME/.local" /absolute/path/to/archive.tgz`.
+
+The installed command uses pinned nvm Node when available and otherwise uses the Node runtime that ships with ZCode Desktop. To select a different bundle, pass `--app-bundle` or set `HERDR_ZCODE_APP_BUNDLE`. `herdr-zcode --version --json` reports supported runtimes and the minimum Desktop version without opening an account session.
 
 The `export` command makes herdr-zcode available in this Terminal window. For new windows, you can use its full path, `"$HOME/.local/bin/herdr-zcode"`, or add the same `export` line to your shell's startup file (`~/.zshrc` for the default macOS shell).
 

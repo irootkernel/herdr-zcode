@@ -6,12 +6,12 @@ import { readFile, realpath } from 'node:fs/promises';
 import { AppServerClient, safeErrorSummary } from '../lib/app-server-client.mjs';
 import { AppServerController } from '../lib/app-server-controller.mjs';
 import { desktopAccount } from '../lib/desktop-account.mjs';
-import { prepareDesktopRuntime } from '../lib/desktop-runtime.mjs';
+import { appServerEnvironment, prepareDesktopRuntime } from '../lib/desktop-runtime.mjs';
 import { classifyFailure } from '../lib/error-classification.mjs';
 import { createRuntimeProfile, RUNTIMES } from '../lib/runtime-profile.mjs';
-import { assertNode } from '../lib/toolchain.mjs';
+import { assertNode, readToolchains } from '../lib/toolchain.mjs';
 
-try { assertNode(); }
+try { assertNode({ allowEmbeddedElectron: true }); }
 catch (error) { console.error('herdr-zcode: ' + error.message); process.exit(1); }
 
 export function parseArgs(argv) {
@@ -20,6 +20,9 @@ export function parseArgs(argv) {
     const arg = argv[i];
     if (['--help', '-h', '--bridge-help'].includes(arg)) { options.help = true; continue; }
     if (arg === '--version') { options.version = true; continue; }
+    if (arg === '--json') { options.json = true; continue; }
+    if (arg === '--no-copy-catalog') { options.copyCatalog = false; continue; }
+    if (arg === '--skip-desktop-inspect') { options.skipDesktopInspect = true; continue; }
     if (arg === '--non-interactive') { options.nonInteractive = true; continue; }
     if (arg === '--runtime') {
       const runtime = argv[++i];
@@ -27,7 +30,7 @@ export function parseArgs(argv) {
       options.runtime = runtime;
       continue;
     }
-    if (!['--cwd', '--model', '--mode', '--resume', '--prompt-file', '--app-bundle'].includes(arg) || !argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error('Invalid command arguments');
+    if (!['--cwd', '--model', '--mode', '--resume', '--prompt-file', '--app-bundle', '--runtime-dir'].includes(arg) || !argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error('Invalid command arguments');
     options[arg.slice(2)] = argv[++i];
   }
   // ZCode's own model-reference convention: a `$level` suffix after the first
@@ -42,6 +45,7 @@ export function parseArgs(argv) {
   }
   options.cwd = resolve(options.cwd);
   if (!['plan', 'build', 'edit', 'guarded', 'yolo', 'auto'].includes(options.mode)) throw new Error('Use mode plan, build, edit, guarded, yolo, or auto');
+  if (options.json && !options.version) throw new Error('--json requires --version');
   return options;
 }
 
@@ -57,11 +61,14 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
   catch (error) { errorOutput.write(error.message + '\n'); return 1; }
   if (options.version) {
     const metadata = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
-    write(`herdr-zcode ${metadata.version}\n`);
+    if (options.json) {
+      write(JSON.stringify({ name: metadata.name, version: metadata.version, runtimes: RUNTIMES, osc7501: true,
+        minZcodeAppVersion: readToolchains().ZCODE_APP_MIN_VERSION }) + '\n');
+    } else write(`herdr-zcode ${metadata.version}\n`);
     return 0;
   }
   if (options.help) {
-    write('herdr-zcode [--cwd <path>] [--model <provider/model[$level]>] [--mode <mode>] [--resume <session>]\n[--runtime <tui|core>] [--non-interactive] [--prompt-file <path>] [--app-bundle <path>] [--version] [--bridge-help]\nThe default runtime is tui. With --non-interactive, core reports startup failures through OSC 7501.\nModes use native ZCode semantics: plan, build (default), edit, guarded, yolo, auto. Only explicit --mode changes the default.\nA $level suffix on --model, such as GLM-5.3$high, overrides the model\'s advertised default reasoning level.\nPrompt text or /help. EOF drains queued work; /exit cancels. Ctrl-C stops active work; idle Ctrl-C quits.\n');
+    write('herdr-zcode [--cwd <path>] [--model <provider/model[$level]>] [--mode <mode>] [--resume <session>]\n[--runtime <tui|core>] [--non-interactive] [--prompt-file <path>] [--app-bundle <path>]\n[--runtime-dir <path>] [--no-copy-catalog] [--skip-desktop-inspect] [--version [--json]] [--bridge-help]\nThe default runtime is tui. With --non-interactive, core reports startup failures through OSC 7501.\nModes use native ZCode semantics: plan, build (default), edit, guarded, yolo, auto. Only explicit --mode changes the default.\nA $level suffix on --model, such as GLM-5.3$high, overrides the model\'s advertised default reasoning level.\nPrompt text or /help. EOF drains queued work; /exit cancels. Ctrl-C stops active work; idle Ctrl-C quits.\n');
     return 0;
   }
   const early = [];
@@ -147,11 +154,11 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     let prompt;
     if (options['prompt-file']) prompt = await readFile(resolve(options.cwd, options['prompt-file']), 'utf8');
     if (profile.name === 'tui') reporter = profile.createReporter();
-    runtime = await (adapters.prepareDesktopRuntime ?? prepareDesktopRuntime)({ env, appBundle: options['app-bundle'] });
+    runtime = await (adapters.prepareDesktopRuntime ?? prepareDesktopRuntime)({ env, appBundle: options['app-bundle'],
+      tmpRoot: options['runtime-dir'], copyCatalog: options.copyCatalog, skipInspect: options.skipDesktopInspect });
     if (profile.fastTeardown && signalCode) throw exitStartup;
-    // Do not give the app-server any Herdr route or legacy hook credentials.
-    const childEnv = { ...runtime.env, ELECTRON_RUN_AS_NODE: '1' };
-    for (const key of Object.keys(childEnv)) if (key.startsWith('HERDR_')) delete childEnv[key];
+    // Remove terminal routing and hook credentials even from custom adapters.
+    const childEnv = appServerEnvironment(runtime.env);
     client = new AppServerClient({ executable: runtime.executable, args: runtime.args,
       env: childEnv, cwd: options.cwd, launch: adapters.launch,
       requestTimeout: adapters.rpcTimeout, detached: profile.detached });

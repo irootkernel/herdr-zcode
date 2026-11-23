@@ -517,6 +517,14 @@ test('--app-bundle is forwarded to the runtime helper', async () => {
   const result = await app.result; clean(result); assert.match(result.out, /Reply 1/);
 });
 
+test('runtime scratch, copy and inspection flags reach the installed app-server path', async () => {
+  const app = launch('runtime-flags', ['--runtime-dir', '/fixture runtime', '--no-copy-catalog', '--skip-desktop-inspect']);
+  app.child.stdin.end('hello\n');
+  const result = await app.result;
+  clean(result);
+  assert.match(result.out, /Reply 1/);
+});
+
 for (const flag of ['--version', '--bridge-help']) test(`${flag} works directly without bootstrap`, async () => {
   const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/herdr-zcode-app.mjs', import.meta.url)), flag], { stdio: ['ignore', 'pipe', 'pipe'] });
   let out = ''; child.stdout.on('data', chunk => { out += chunk; });

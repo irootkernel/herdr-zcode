@@ -155,6 +155,7 @@ rl.on('line', line => {
         assert.equal(process.env.ELECTRON_RUN_AS_NODE, '1');
         assert.equal(process.env.HERDR_ZCODE_TOKEN, undefined);
         assert.equal(process.env.HERDR_ZCODE_SOCKET, undefined);
+        assert.ok(Object.keys(process.env).every(key => !key.startsWith('HC_') && !key.startsWith('HERDR_')));
         assert.equal(p.basedOnZCodeBuiltinRevision, 'zcode-builtin:7:active-path-digest');
         const prefs = await reverse('session/requestRuntimePreferences', {}, m.id);
         assert.equal(prefs.askUserQuestionAutoResolutionEnabled, false);

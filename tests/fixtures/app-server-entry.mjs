@@ -9,12 +9,16 @@ return {
   // a 300ms protocol deadline; reserve the short timeout for the hung-RPC test.
   rpcTimeout: process.env.TEST_SCENARIO === 'hang-cleanup' ? 300 : 3000,
   exitTimeout: 200,
-  prepareDesktopRuntime: async ({ appBundle }) => {
+  prepareDesktopRuntime: async ({ appBundle, tmpRoot, copyCatalog, skipInspect }) => {
     if (process.env.TEST_SCENARIO === 'app-bundle' && appBundle !== '/fixture/ZCode Custom.app') throw new Error('App bundle not forwarded');
+    if (process.env.TEST_SCENARIO === 'runtime-flags' && (tmpRoot !== '/fixture runtime' || copyCatalog !== false || skipInspect !== true)) {
+      throw new Error('Runtime options not forwarded');
+    }
     await new Promise(resolve => setTimeout(resolve, 25));
     return { executable: process.execPath,
       args: [fileURLToPath(new URL('./app-server-fake.mjs', import.meta.url))],
-      env: { ...process.env, HERDR_ZCODE_TOKEN: 'legacy-secret', HERDR_ZCODE_SOCKET: '/secret/socket' },
+      env: { ...process.env, HERDR_ZCODE_TOKEN: 'legacy-secret', HERDR_ZCODE_SOCKET: '/secret/socket',
+        HC_TERMINAL_ID: 'fixture-terminal', HC_SOCKET: '/secret/core.sock', HC_TERMINAL_SOCKET: '/secret/terminal.sock' },
       home: '/fixture-home', configPath: '/fixture-active/catalog.json',
       close: async () => write('[runtime released]\n') };
   },

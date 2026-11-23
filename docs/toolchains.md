@@ -1,12 +1,14 @@
 # Toolchain management
 
-`toolchains.env` pins the CLI and development versions of Node and npm and declares the minimum version of ZCode Desktop. Use three numeric components for each declaration. `package.json`'s `engines.node` describes package compatibility. The launcher selects Node using `NODE_VERSION`. The project uses Node.js standard libraries and has no dependency lockfile.
+`toolchains.env` pins the development versions of Node and npm and declares the minimum version of ZCode Desktop. Use three numeric components for each declaration. `package.json`'s `engines.node` describes package compatibility. The project uses Node.js standard libraries and has no dependency lockfile.
 
 ## Prepare and inspect
 
 Install nvm separately using its official instructions. Run `./dev setup` from the checkout. If Node is missing, run the exact `nvm install` command printed by setup, then repeat setup. Only setup downloads tools. It obtains the exact npm archive from the official registry, verifies its SHA-512 integrity, and stores an integrity receipt with the installation. It never upgrades global npm or changes shell startup files.
 
-The Node location is `${NVM_DIR:-$HOME/.nvm}/versions/node/v<declared-version>/bin/node`. npm lives in `${XDG_CACHE_HOME:-$HOME/.cache}/herdr-zcode/toolchains/node-<version>/npm-<version>`. `HERDR_ZCODE_TOOLCHAIN_CACHE` can select a different cache root. Normal execution only reads prepared tools and fails if they are missing or mismatched. The CLI itself needs pinned Node; npm commands additionally need the prepared npm cache.
+The nvm Node location is `${NVM_DIR:-$HOME/.nvm}/versions/node/v<declared-version>/bin/node`. npm lives in `${XDG_CACHE_HOME:-$HOME/.cache}/herdr-zcode/toolchains/node-<version>/npm-<version>`. `HERDR_ZCODE_TOOLCHAIN_CACHE` can select a different cache root. `./dev` enforces the Node pin, and its npm commands also require the prepared npm cache.
+
+The installed `herdr-zcode` checks the same nvm location first. If that executable is absent, it runs the selected ZCode Desktop binary in Electron Node mode with Node 20 or newer. `--app-bundle` takes precedence over `HERDR_ZCODE_APP_BUNDLE`, which defaults to `/Applications/ZCode.app`. The Electron fallback clears `NODE_OPTIONS` and `NODE_PATH` and works with an empty `HOME` and no `NVM_DIR`. The launcher never searches `PATH` for Node.
 
 `./dev doctor` reports declared versions, actual versions, and executable paths. `./dev doctor --desktop` also inspects the app at `HERDR_ZCODE_APP_BUNDLE` or `/Applications/ZCode.app`. The CLI accepts `--app-bundle` as well. Apps at or above `ZCODE_APP_MIN_VERSION` pass the version check. Doctor reports the actual app build and embedded Node and Electron versions for diagnosis. The probe checks the executable and runs without accessing credentials or starting a model session.
 

@@ -7,4 +7,42 @@ while [ -L "$entry" ]; do
   case "$target" in /*) entry=$target ;; *) entry=$base/$target ;; esac
 done
 root=$(CDPATH= cd -- "$(dirname -- "$entry")/.." && pwd -P)
-exec "$root/scripts/toolchain.sh" run "$@"
+fail() { printf 'herdr-zcode: %s\n' "$*" >&2; exit 1; }
+[ -f "$root/toolchains.env" ] || fail 'Missing toolchains.env'
+pinned_node_version=
+while IFS='=' read -r key value || [ -n "$key" ]; do
+  [ "$key" = NODE_VERSION ] || continue
+  [ -z "$pinned_node_version" ] || fail 'Duplicate toolchain key: NODE_VERSION'
+  case "$value" in
+    ''|*[!0-9.]*|.*|*.|*..*|*.*.*.*) fail 'Invalid version for NODE_VERSION' ;;
+    *.*.*) pinned_node_version=$value ;;
+    *) fail 'Invalid version for NODE_VERSION' ;;
+  esac
+done < "$root/toolchains.env"
+[ -n "$pinned_node_version" ] || fail 'Missing toolchain key: NODE_VERSION'
+nvm_root=${NVM_DIR:-${HOME:+$HOME/.nvm}}
+if [ -n "$nvm_root" ]; then
+  node_bin=$nvm_root/versions/node/v$pinned_node_version/bin/node
+  if [ -f "$node_bin" ] && [ -x "$node_bin" ]; then
+    exec "$root/scripts/toolchain.sh" run "$@"
+  fi
+fi
+
+app_bundle=${HERDR_ZCODE_APP_BUNDLE:-/Applications/ZCode.app}
+expect_bundle=0
+for arg do
+  if [ "$expect_bundle" = 1 ]; then
+    case "$arg" in ''|--*) fail 'Invalid command arguments' ;; esac
+    app_bundle=$arg
+    expect_bundle=0
+  elif [ "$arg" = --app-bundle ]; then
+    expect_bundle=1
+  fi
+done
+[ "$expect_bundle" = 0 ] || fail 'Invalid command arguments'
+case "$app_bundle" in /*) ;; *) app_bundle=$(pwd -P)/$app_bundle ;; esac
+executable=$app_bundle/Contents/MacOS/ZCode
+[ -f "$executable" ] && [ -x "$executable" ] || fail "Node $pinned_node_version is unavailable through nvm and no ZCode executable was found at $executable"
+unset NODE_OPTIONS NODE_PATH
+export ELECTRON_RUN_AS_NODE=1
+exec "$executable" "$root/bin/herdr-zcode-app.mjs" "$@"
