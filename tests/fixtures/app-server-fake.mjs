@@ -20,9 +20,21 @@ const reverse = (method, params, id = `server-${waiting.size + 1}`) => new Promi
   waiting.set(id, resolve); send({ id, method, params });
 });
 const available = [{ ref: { providerId: 'account:zai-individual-coding-plan', modelId: 'GLM-5.3' }, reasoning: { levels: [{ value: 'low' }, { value: 'high' }, { value: 'max' }], defaultLevel: 'max' } }];
+const preserveDefault = process.env.TEST_PRESERVE_MODEL === '1';
+let current = preserveDefault ? { providerId: 'server-default', modelId: 'native-default' } : available[0].ref;
+let thoughtChanges = 0, thoughtLevel, interactionObserved;
 const snapshot = () => ({ session: { sessionId }, settings: { model: {
-  current: scenario === 'wrong-model' ? { providerId: 'wrong', modelId: 'other' } : available[0].ref,
-  available: scenario === 'missing-model' ? [] : available } } });
+  current: scenario === 'wrong-model' ? { providerId: 'wrong', modelId: 'other' } : current,
+  available: scenario === 'missing-model' ? [] : available },
+  ...(preserveDefault && thoughtLevel && scenario !== 'reasoning-unreported' ? {
+    thoughtLevel: { current: thoughtLevel, available: ['low', 'high'], defaultLevel: 'low', enabled: true },
+  } : {}) } });
+const snapshotWithEffort = level => {
+  const state = snapshot();
+  if (preserveDefault) state.settings.thoughtLevel.current = level;
+  else state.settings.model.current = { ...state.settings.model.current, options: { reasoningLevel: level } };
+  return state;
+};
 const observedSnapshot = (activeTurnId, eventSeq, backgroundJobs = []) => ({ ...snapshot(),
   runtime: { activeTurnId, eventSeq, stateRevision: eventSeq },
   projection: { sessionId, status: activeTurnId ? 'running' : 'idle', currentTurnId: activeTurnId || 'previous-turn', pendingPermissions: [], backgroundJobs } });
@@ -52,6 +64,30 @@ async function runPrompt(p, id) {
     return;
   }
   if (scenario !== 'slow-ack') reply(id, { accepted: true, sessionId });
+  if (scenario === 'automation-literal' || scenario === 'automation-signal') {
+    assert.equal(turn, 1);
+    assert.equal(p.content, '/review src/a.js');
+    if (scenario === 'automation-signal') event('model.streaming', { kind: 'text_delta', delta: 'literal prompt accepted\n' });
+    else complete('literal prompt accepted');
+    return;
+  }
+  if (['automation-permission', 'automation-question'].includes(scenario)) {
+    assert.equal(turn, 1);
+    const isPermission = scenario === 'automation-permission';
+    const params = isPermission ? permission('guarded-interaction') : {
+      sessionId, turnId: active.turnId, requestId: 'guarded-interaction', prompt: 'fixture question',
+    };
+    if (isPermission || process.env.TEST_QUESTION_ANNOUNCEMENT) {
+      event('permission.requested', isPermission ? params : { ...params, toolName: process.env.TEST_QUESTION_ANNOUNCEMENT });
+    }
+    interactionObserved = reverse(isPermission ? 'interaction/requestPermission' : 'interaction/requestUserInput', params).then(res => {
+      const expected = isPermission ? { decision: 'deny', reason: 'Client declined request' } : { action: 'decline' };
+      assert.deepEqual(res, expected);
+      if (active) complete('provider terminal after decline');
+    });
+    await interactionObserved;
+    return;
+  }
   if (p.content === 'hang' || scenario === 'hang-cleanup') return;
   if (scenario === 'error-result') {
     event('turn.completed', { response: 'Tool limit reached', inputId: p.inputId, resultType: 'error_max_tool_calls' });
@@ -168,7 +204,8 @@ rl.on('line', line => {
           assert.equal(p.basedOnZCodeBuiltinRevision, `zcode-builtin:31:${digest}`);
         } else assert.equal(p.basedOnZCodeBuiltinRevision, 'zcode-builtin:7:active-path-digest');
         const prefs = await reverse('session/requestRuntimePreferences', {}, m.id);
-        assert.equal(prefs.askUserQuestionAutoResolutionEnabled, false);
+        assert.deepEqual(prefs, { nativeSearchEnhancementsEnabled: false, subagentRuntimeConfigEnabled: false, memoryEnabled: false,
+          askUserQuestionAutoResolutionEnabled: process.env.TEST_AUTO_RESOLVE_QUESTIONS === '1' });
         const request = scenario === 'projected-auth' ? { providerId: available[0].ref.providerId,
           accountAccess: { type: 'zhipu-account', mode: 'individual-coding-plan', accountType: 'zai' } } : {};
         const auth = await reverse('interaction/requestProviderRuntimeHeaders', request);
@@ -184,6 +221,11 @@ rl.on('line', line => {
         if (scenario.startsWith('mode-')) assert.equal(p.mode, scenario.slice(5));
         if (scenario === 'resume') { assert.equal(m.method, 'session/resume'); assert.equal(p.sessionId, sessionId); }
         assert.ok(p.workspace.workspacePath);
+        if (m.method === 'session/create') {
+          const scope = JSON.parse(process.env.TEST_CREATE_SCOPE || '{}');
+          assert.deepEqual(p, { workspace: p.workspace, mode: p.mode, ...scope });
+          thoughtLevel = p.thoughtLevel;
+        }
         if (scenario === 'snapshot-permission-reconciled') {
           const bootstrap = observedSnapshot(undefined, 1);
           bootstrap.projection.pendingPermissions = [{ requestId: 'expired-bootstrap', toolCallId: 'expired-tool', toolName: 'Write', options: [] }];
@@ -193,26 +235,47 @@ rl.on('line', line => {
         } else reply(m.id, snapshot());
         break;
       case 'session/setModel':
+        assert.equal(preserveDefault, false, 'preserved session default was overwritten');
         assert.equal(p.persistAsWorkspaceLastUsed, false);
         assert.equal(p.model.options.reasoningLevel, process.env.TEST_REASONING || 'max');
         if (scenario === 'startup-auth-with-provisional-turn') {
           send({ id: m.id, error: { code: -32001, data: { attribution: { statusCode: 401, reason: 'auth_failed' } } } });
           break;
         }
-        reply(m.id, snapshot()); break;
+        current = p.model;
+        reply(m.id, scenario === 'explicit-reasoning-mismatch' ? snapshotWithEffort('low') : snapshot()); break;
+      case 'session/setThoughtLevel':
+        assert.equal(p.sessionId, sessionId);
+        assert.equal(p.thoughtLevel, process.env.TEST_THOUGHT_LEVEL);
+        thoughtChanges++;
+        if (scenario === 'startup-block-before-rejection') {
+          const response = await reverse('interaction/requestUserInput', { sessionId, requestId: 'blocked-startup', prompt: 'fixture question' });
+          assert.deepEqual(response, { action: 'decline' });
+          send({ id: m.id, error: { code: -32001, data: { attribution: { statusCode: 401, reason: 'auth_failed' } } } });
+          break;
+        }
+        thoughtLevel = p.thoughtLevel;
+        reply(m.id, scenario === 'reasoning-response-mismatch' ? snapshotWithEffort('low') : snapshot()); break;
       case 'session/setMode': assert.equal(p.mode, 'guarded'); reply(m.id, {}); break;
       case 'session/subscribe':
         assert.equal(p.includeSnapshot, true);
+        assert.equal(thoughtChanges, process.env.TEST_THOUGHT_LEVEL ? 1 : 0);
         if (scenario === 'snapshot-reconciled' || scenario === 'snapshot-permission-reconciled') {
           seq = 2; reply(m.id, { snapshot: observedSnapshot(undefined, seq) });
         } else if (scenario === 'snapshot-background') {
           seq = 1; reply(m.id, { snapshot: observedSnapshot(undefined, seq, [{ taskId: 'snapshot-job', status: 'running' }]) });
           setTimeout(() => event('session.updated', { taskId: 'snapshot-job', status: 'completed' }), 20);
-        } else reply(m.id, { snapshot: snapshot() });
+        } else if (['reasoning-subscribe-mismatch', 'explicit-reasoning-subscribe-mismatch'].includes(scenario)) {
+          reply(m.id, { snapshot: snapshotWithEffort('low') });
+        }
+        else reply(m.id, { snapshot: snapshot() });
         break;
-      case 'session/send': await runPrompt(p, m.id); break;
+      case 'session/send':
+        assert.notEqual(scenario, 'startup-block-before-rejection');
+        await runPrompt(p, m.id); break;
       case 'session/stop':
         if (scenario === 'hang-cleanup') return;
+        await interactionObserved;
         if (active) complete('stopped by client');
         reply(m.id, {}); break;
       case 'session/close':

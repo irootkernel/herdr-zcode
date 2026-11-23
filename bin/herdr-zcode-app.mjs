@@ -14,8 +14,24 @@ import { assertNode, readToolchains } from '../lib/toolchain.mjs';
 try { assertNode({ allowEmbeddedElectron: true }); }
 catch (error) { console.error('herdr-zcode: ' + error.message); process.exit(1); }
 
+const CREATE_SWITCHES = {
+  '--disable-mcp': ['mcpServers', []],
+  '--disable-title-gen': ['titleGenerationEnabled', false],
+  '--disable-offpeak': ['offPeakToolEnabled', false],
+  '--disable-dynamic-workflow': ['dynamicWorkflowEnabled', false],
+};
+const TOOL_FLAGS = { '--tool-allowlist': 'toolAllowlist', '--tool-denylist': 'toolDenylist' };
+const VALUE_FLAGS = new Set(['--cwd', '--model', '--mode', '--resume', '--prompt-file', '--app-bundle', '--runtime-dir',
+  '--auth-file', '--interaction-policy', '--additional-dir', '--persistence', '--reasoning-effort', '--thought-level', ...Object.keys(TOOL_FLAGS)]);
+function requestedReasoning(current, next) {
+  const level = next.trim();
+  if (!level) throw new Error('Reasoning effort must be non-empty');
+  if (current && current !== level) throw new Error('Conflicting reasoning effort values');
+  return level;
+}
+
 export function parseArgs(argv) {
-  const options = { cwd: process.cwd(), mode: 'build', runtime: 'tui' };
+  const options = { cwd: process.cwd(), mode: 'build', runtime: 'tui', sessionScope: {} };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (['--help', '-h', '--bridge-help'].includes(arg)) { options.help = true; continue; }
@@ -25,14 +41,39 @@ export function parseArgs(argv) {
     if (arg === '--skip-desktop-inspect') { options.skipDesktopInspect = true; continue; }
     if (arg === '--consume-auth-file') { options.consumeAuthFile = true; continue; }
     if (arg === '--non-interactive') { options.nonInteractive = true; continue; }
+    if (arg === '--preserve-default-model') { options.preserveDefaultModel = true; continue; }
+    if (arg === '--auto-resolve-questions') { options.autoResolveQuestions = true; continue; }
+    if (Object.hasOwn(CREATE_SWITCHES, arg)) {
+      const [field, value] = CREATE_SWITCHES[arg];
+      options.sessionScope[field] = Array.isArray(value) ? [] : value;
+      continue;
+    }
     if (arg === '--runtime') {
       const runtime = argv[++i];
       if (!RUNTIMES.includes(runtime)) throw new Error('Use runtime tui or core');
       options.runtime = runtime;
       continue;
     }
-    if (!['--cwd', '--model', '--mode', '--resume', '--prompt-file', '--app-bundle', '--runtime-dir', '--auth-file'].includes(arg) || !argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error('Invalid command arguments');
-    options[arg.slice(2)] = argv[++i];
+    const value = argv[i + 1];
+    if (!VALUE_FLAGS.has(arg) || value === undefined || value.startsWith('--') || (value === '' && !Object.hasOwn(TOOL_FLAGS, arg))) {
+      throw new Error('Invalid command arguments');
+    }
+    i++;
+    if (Object.hasOwn(TOOL_FLAGS, arg)) {
+      const tools = value === '' ? [] : value.split(',').map(name => name.trim());
+      if (tools.includes('')) throw new Error(`${arg} contains an empty tool name`);
+      options.sessionScope[TOOL_FLAGS[arg]] = tools;
+    } else if (arg === '--additional-dir') {
+      const directories = options.sessionScope.additionalDirectories ??= [];
+      if (value.includes('\0')) throw new Error('--additional-dir contains a NUL character');
+      if (directories.length === 256) throw new Error('Use at most 256 --additional-dir arguments');
+      directories.push(value);
+    } else if (arg === '--persistence') {
+      if (!['immediate', 'deferred'].includes(value)) throw new Error('Use persistence immediate or deferred');
+      options.sessionScope.persistence = value;
+    } else if (arg === '--reasoning-effort' || arg === '--thought-level') {
+      options.reasoning = requestedReasoning(options.reasoning, value);
+    } else options[arg.slice(2)] = value;
   }
   // ZCode's own model-reference convention: a `$level` suffix after the first
   // `/` selects the reasoning level; a `$` at the id start or end stays literal.
@@ -40,15 +81,37 @@ export function parseArgs(argv) {
     const idStart = options.model.indexOf('/') + 1;
     const marker = options.model.indexOf('$', idStart);
     if (marker > idStart && marker < options.model.length - 1) {
-      options.reasoning = options.model.slice(marker + 1);
+      options.reasoning = requestedReasoning(options.reasoning, options.model.slice(marker + 1));
       options.model = options.model.slice(0, marker);
     }
   }
   options.cwd = resolve(options.cwd);
+  if (options.sessionScope.additionalDirectories) {
+    options.sessionScope.additionalDirectories = options.sessionScope.additionalDirectories.map(path => resolve(options.cwd, path));
+  }
+  if (options.resume && Object.keys(options.sessionScope).length) throw new Error('Session creation flags cannot be used with --resume');
+  options.interactionPolicy = options['interaction-policy'] ?? (options.nonInteractive ? 'block' : 'interactive');
+  if (!['interactive', 'deny', 'block'].includes(options.interactionPolicy)) throw new Error('Use interaction policy interactive, deny, or block');
+  if (options.nonInteractive && options.interactionPolicy === 'interactive') throw new Error('--non-interactive requires an interaction policy of deny or block');
   if (!['plan', 'build', 'edit', 'guarded', 'yolo', 'auto'].includes(options.mode)) throw new Error('Use mode plan, build, edit, guarded, yolo, or auto');
   if (options.json && !options.version) throw new Error('--json requires --version');
   if (options.consumeAuthFile && !options['auth-file']) throw new Error('--consume-auth-file requires --auth-file');
   return options;
+}
+
+function sameModel(actual, expected) {
+  return actual?.providerId === expected.providerId && actual?.modelId === expected.modelId;
+}
+
+function checkReasoning(result, effort, modelRequired = false) {
+  const modelLevel = result?.settings?.model?.current?.options?.reasoningLevel;
+  const observed = modelRequired ? [modelLevel]
+    : [modelLevel, result?.settings?.thoughtLevel?.current, result?.thoughtLevel].filter(level => level !== undefined);
+  if (observed.some(level => level !== effort)) {
+    const message = 'Selected reasoning level was not applied';
+    throw Object.assign(new Error(message), { safeSummary: message });
+  }
+  return observed.length > 0;
 }
 
 // Explicit adapters let offline integration tests run the real entrypoint against
@@ -70,7 +133,18 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     return 0;
   }
   if (options.help) {
-    write('herdr-zcode [--cwd <path>] [--model <provider/model[$level]>] [--mode <mode>] [--resume <session>]\n[--runtime <tui|core>] [--non-interactive] [--prompt-file <path>] [--app-bundle <path>]\n[--runtime-dir <path>] [--no-copy-catalog] [--skip-desktop-inspect] [--auth-file <path> [--consume-auth-file]]\n[--version [--json]] [--bridge-help]\nThe default runtime is tui. With --non-interactive, core reports startup failures through OSC 7501.\nModes use native ZCode semantics: plan, build (default), edit, guarded, yolo, auto. Only explicit --mode changes the default.\nA $level suffix on --model, such as GLM-5.3$high, overrides the model\'s advertised default reasoning level.\nPrompt text or /help. EOF drains queued work; /exit cancels. Ctrl-C stops active work; idle Ctrl-C quits.\n');
+    write(`herdr-zcode [--cwd <path>] [--model <provider/model[$level]>] [--mode <mode>] [--resume <session>]
+[--runtime <tui|core>] [--non-interactive] [--interaction-policy <interactive|deny|block>] [--auto-resolve-questions]
+[--reasoning-effort <level> | --thought-level <level>] [--preserve-default-model]
+[--tool-allowlist <csv>] [--tool-denylist <csv>] [--disable-mcp] [--disable-title-gen]
+[--disable-offpeak] [--disable-dynamic-workflow] [--additional-dir <path>] [--persistence <immediate|deferred>]
+[--prompt-file <path>] [--app-bundle <path>] [--auth-file <path> [--consume-auth-file]]
+[--runtime-dir <path>] [--no-copy-catalog] [--skip-desktop-inspect] [--version [--json]] [--bridge-help]
+The default runtime is tui. Noninteractive input treats slash lines as prompts and blocks on unexpected interaction by default.
+Modes use native ZCode semantics: plan, build (default), edit, guarded, yolo, auto. Only explicit --mode changes the default.
+A $level suffix on --model, such as GLM-5.3$high, overrides the model's advertised default reasoning level.
+Interactive input accepts /help and /exit. EOF drains queued work. Ctrl-C stops active work; idle Ctrl-C quits.
+`);
     return 0;
   }
   const early = [];
@@ -81,7 +155,7 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     flushOutput: () => flushOutput({ keepPrefix: Boolean(controller?.current && !controller.closing) }),
   });
   const initialRawMode = input.isRaw;
-  const rl = readline.createInterface({ input, output, terminal: Boolean(input.isTTY && output.isTTY) });
+  const rl = readline.createInterface({ input, output, terminal: Boolean(!options.nonInteractive && input.isTTY && output.isTTY) });
   let pasting = false, pasteDraft = false, pasteLines = [], pasteSubmit = false, bracketedEnabled = false;
   const discardPaste = () => { pasting = false; pasteDraft = false; pasteLines = []; pasteSubmit = false; };
   const admit = (content, prompt = false) => {
@@ -120,7 +194,7 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
   const quit = code => {
     signalCode ||= code;
     if (finishStartupBlock) { finishStartupBlock(); return; }
-    admit('/exit');
+    controller?.closeInput();
   };
   const interrupt = () => {
     discardPaste();
@@ -155,18 +229,19 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     if (rl.terminal) { bracketedEnabled = true; write('\x1b[?2004h'); }
     let prompt;
     if (options['prompt-file']) prompt = await readFile(resolve(options.cwd, options['prompt-file']), 'utf8');
+    if (signalCode) throw exitStartup;
     if (profile.name === 'tui') reporter = profile.createReporter();
     const authFile = options['auth-file'];
     runtime = await (adapters.prepareDesktopRuntime ?? prepareDesktopRuntime)({ env, appBundle: options['app-bundle'],
       tmpRoot: options['runtime-dir'], copyCatalog: options.copyCatalog, skipInspect: options.skipDesktopInspect, useKeychain: !authFile });
-    if (profile.fastTeardown && signalCode) throw exitStartup;
+    if (signalCode) throw exitStartup;
     // Remove terminal routing and hook credentials even from custom adapters.
     const childEnv = appServerEnvironment(runtime.env);
     client = new AppServerClient({ executable: runtime.executable, args: runtime.args,
       env: childEnv, cwd: options.cwd, launch: adapters.launch,
       requestTimeout: adapters.rpcTimeout, detached: profile.detached });
     controller = new AppServerController({ client, reporter, reportBeforeReady: profile.reportBeforeReady,
-      output: write, rpcTimeout: adapters.rpcTimeout });
+      output: write, rpcTimeout: adapters.rpcTimeout, slashCommands: !options.nonInteractive, interactionPolicy: options.interactionPolicy });
     // Observe transitions after the controller handles the event. Unrelated child
     // or stale terminal events must not flush a prefix from the active turn.
     let outputTurn;
@@ -178,53 +253,79 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     for (const { content, prompt } of early) admit(content, prompt);
     if (eof) controller.eof();
     if (controller.closing) throw exitStartup;
+    const preserve = options.model === undefined && (options.nonInteractive || options.preserveDefaultModel);
+    const accountModel = preserve ? null : options.model;
     const account = authFile
       ? await (adapters.projectedAccount ?? projectedAccount)(runtime.configPath, resolve(options.cwd, authFile), {
-        model: options.model, consume: options.consumeAuthFile,
+        model: accountModel, consume: options.consumeAuthFile,
       })
       : await (adapters.desktopAccount ?? desktopAccount)(runtime.configPath, {
-        env, home: runtime.home, model: options.model, withOSCredentialReader: runtime.withOSCredentialReader,
+        env, home: runtime.home, model: accountModel, withOSCredentialReader: runtime.withOSCredentialReader,
       });
-    controller.expectedModel = account.selection;
     redactor = account.createStreamRedactor?.() ?? {
       write: text => account.redact ? account.redact(text) : text, flush: () => '',
     };
     if (controller.closing) throw exitStartup;
     client.handle('interaction/requestProviderRuntimeHeaders', params => account.runtimeHeaders(params));
     client.handle('session/requestRuntimePreferences', () => ({ nativeSearchEnhancementsEnabled: false,
-      subagentRuntimeConfigEnabled: false, memoryEnabled: false, askUserQuestionAutoResolutionEnabled: false }));
+      subagentRuntimeConfigEnabled: false, memoryEnabled: false,
+      askUserQuestionAutoResolutionEnabled: Boolean(options.nonInteractive || options.autoResolveQuestions) }));
     client.start();
     const rpc = (method, params) => client.request(method, params, adapters.rpcTimeout);
     await rpc('provider/updateAccountConfig', account.config);
     if (controller.closing) throw exitStartup;
     const workspace = { workspaceKey: options.cwd, workspacePath: options.cwd };
+    const createParams = { workspace, mode: options.mode, ...options.sessionScope };
+    if (options.model === undefined && options.reasoning) createParams.thoughtLevel = options.reasoning;
     const created = await rpc(options.resume ? 'session/resume' : 'session/create', options.resume
-      ? { sessionId: options.resume, workspace } : { workspace, mode: options.mode });
+      ? { sessionId: options.resume, workspace } : createParams);
     const sessionId = created?.session?.sessionId;
     if (typeof sessionId !== 'string' || !sessionId || (options.resume && sessionId !== options.resume)) throw new Error('Invalid session');
     // Store identity before subsequent fallible startup RPCs so cleanup can close it.
     controller.sessionId = sessionId;
     controller.snapshot(created);
     if (controller.closing) throw exitStartup;
-    const chosen = created.settings?.model?.available?.find(item => item.ref?.providerId === account.selection.providerId && item.ref?.modelId === account.selection.modelId);
-    if (!chosen || chosen.availability === 'unavailable') throw new Error('Selected model unavailable');
-    const model = { ...account.selection };
-    const reasoningLevel = options.reasoning || chosen.reasoning?.defaultLevel;
-    if (reasoningLevel) model.options = { reasoningLevel };
-    const configured = await rpc('session/setModel', { sessionId, model, persistAsWorkspaceLastUsed: false });
-    const observed = configured?.settings?.model?.current;
-    if (observed?.providerId !== model.providerId || observed?.modelId !== model.modelId) throw new Error('Selected model was not applied');
+    const selection = preserve ? null : account.selection;
+    const current = created.settings?.model?.current ?? null;
+    controller.expectedModel = selection ?? current;
+    let reasoningLevel = options.reasoning;
+    let reasoningVerified = false;
+    if (selection) {
+      const chosen = created.settings?.model?.available?.find(item => sameModel(item.ref, selection));
+      if (!chosen || chosen.availability === 'unavailable') throw new Error('Selected model unavailable');
+      reasoningLevel ??= chosen.reasoning?.defaultLevel;
+      const model = reasoningLevel ? { ...selection, options: { reasoningLevel } } : selection;
+      const configured = await rpc('session/setModel', { sessionId, model, persistAsWorkspaceLastUsed: false });
+      if (!sameModel(configured?.settings?.model?.current, model)) throw new Error('Selected model was not applied');
+      if (options.reasoning) checkReasoning(configured, options.reasoning, true);
+    } else if (options.reasoning) {
+      const configured = await rpc('session/setThoughtLevel', { sessionId, thoughtLevel: options.reasoning });
+      const observed = configured?.settings?.model?.current;
+      if (current && observed && !sameModel(observed, current)) throw new Error('Selected model changed while applying reasoning');
+      controller.expectedModel ??= observed;
+      reasoningVerified = checkReasoning(configured, options.reasoning);
+    }
+    if (controller.closing) throw exitStartup;
     if (options.resume) await rpc('session/setMode', { sessionId, mode: options.mode });
     const subscribed = await rpc('session/subscribe', { sessionId, deliveryKind: 'desktop-continuous', includeSnapshot: true });
     const subscribedModel = subscribed?.snapshot?.settings?.model?.current;
-    if (subscribedModel?.providerId !== model.providerId || subscribedModel?.modelId !== model.modelId) throw new Error('Selected model changed before subscription');
-    write(`Selected: ${account.selection.providerId}/${account.selection.modelId}${reasoningLevel ? ` (reasoning: ${reasoningLevel})` : ''}\n`);
+    if (controller.closing) throw exitStartup;
+    if (controller.expectedModel && !sameModel(subscribedModel, controller.expectedModel)) throw new Error('Selected model changed before subscription');
+    if (options.reasoning) {
+      const subscribedEffort = checkReasoning(subscribed?.snapshot, options.reasoning, Boolean(selection));
+      if (!selection && !reasoningVerified && !subscribedEffort) reasoningLevel = undefined;
+    }
+    controller.expectedModel ??= subscribedModel;
+    if (controller.expectedModel) {
+      const { providerId, modelId } = controller.expectedModel;
+      controller.print(`Selected: ${providerId}/${modelId}${reasoningLevel ? ` (reasoning: ${reasoningLevel})` : ''}`);
+    }
     controller.attach(sessionId, subscribed?.snapshot ?? created,
       subscribed?.snapshot?.runtime?.eventSeq ?? subscribed?.eventSeq ?? 0);
-    write('Type /help for commands.\n');
+    if (!options.nonInteractive) write('Type /help for commands.\n');
     await controller.done;
   } catch (error) {
-    if (error !== exitStartup && !(profile.fastTeardown && signalCode)) {
+    if (error !== exitStartup && !controller?.interactionBlocked && !(profile.fastTeardown && signalCode)) {
       failed = true;
       errorOutput.write('ZCode startup or transport failed. Check installation, account, selected model and catalog compatibility.\n');
       const diagnostic = error.safeSummary || safeErrorSummary(error);
@@ -252,7 +353,7 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     try { rl.close(); } catch { failed = true; }
     releaseInput();
     if (!signalTermination) {
-      const shutdownTimeout = profile.fastTeardown ? Math.min(adapters.rpcTimeout ?? 15000, 1500) : undefined;
+      const shutdownTimeout = profile.fastTeardown || options.nonInteractive ? Math.min(adapters.rpcTimeout ?? 15000, 1500) : undefined;
       await controller?.shutdown(shutdownTimeout);
     }
     let exited = !client?.child;

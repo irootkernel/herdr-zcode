@@ -102,6 +102,14 @@ herdr-zcode --cwd /path/to/project --model 'account:zai-individual-coding-plan/G
 
 Keep the model reference in single quotes so the shell passes `$max` literally. The part before `$` selects the model; the suffix after it names the reasoning level. GLM-5.3 and GLM-5.3-Flash advertise `low`, `high`, and `max`, and default to `max`. A level the model does not advertise is rejected at startup with the supported list. The startup line confirms what was applied, for example `Selected: account:zai-individual-coding-plan/GLM-5.3 (reasoning: max)`.
 
+Use `--reasoning-effort <level>` or its alias `--thought-level <level>` to choose effort separately. If you also use a `$level` model suffix, the values must agree. With no `--model`, `--non-interactive` and `--preserve-default-model` retain the server's selection and apply any requested effort separately.
+
+### Running a scoped session
+
+Use `--tool-allowlist` and `--tool-denylist` with comma-separated tool names. An explicit empty string (`''`) sends an empty list. Use `--disable-mcp`, `--disable-title-gen`, `--disable-offpeak`, or `--disable-dynamic-workflow` for the corresponding behavior. Repeat `--additional-dir <path>` up to 256 times and use `--persistence immediate|deferred` to choose the session's persistence. These flags apply to new sessions.
+
+With `--non-interactive`, all input lines, including slash-prefixed lines, are prompts. Unexpected permission requests and questions stop the session by default. Pass `--interaction-policy deny` to decline them and let the server continue. Noninteractive mode enables question auto-resolution, which you can also request independently with `--auto-resolve-questions`.
+
 ### Longer requests and saved conversations
 
 Paste a multiline request as one paste, or save it to a text file and start with:

@@ -10,7 +10,11 @@ import { offlineAdapters } from './fixtures/app-server-entry.mjs';
 
 const entry = fileURLToPath(new URL('./fixtures/app-server-entry.mjs', import.meta.url));
 function launch(scenario = 'normal', args = [], options = {}) {
-  const child = spawn(process.execPath, [entry, ...args], { env: { ...process.env, TEST_SCENARIO: scenario }, stdio: ['pipe', 'pipe', 'pipe'], ...options });
+  const { env, ...spawnOptions } = options;
+  const child = spawn(process.execPath, [entry, ...args], { env: { ...process.env, TEST_SCENARIO: scenario,
+    TEST_AUTO_RESOLVE_QUESTIONS: args.includes('--non-interactive') || args.includes('--auto-resolve-questions') ? '1' : '0',
+    TEST_PRESERVE_MODEL: !args.includes('--model') && (args.includes('--non-interactive') || args.includes('--preserve-default-model')) ? '1' : '0',
+    ...env }, stdio: ['pipe', 'pipe', 'pipe'], ...spawnOptions });
   let out = '', err = '';
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   child.stdout.on('data', chunk => { out += chunk; });
@@ -98,7 +102,7 @@ test('core startup authentication is observable before a supervisor stops the bl
 });
 
 test('core SIGINT releases a startup auth block with a provisional turn', { skip: process.platform === 'win32' }, async () => {
-  const app = launch('startup-auth-with-provisional-turn', ['--runtime', 'core', '--non-interactive']);
+  const app = launch('startup-auth-with-provisional-turn', ['--runtime', 'core', '--non-interactive', '--model', 'account:zai-individual-coding-plan/GLM-5.3']);
   await app.wait('\x1b]7501;state=blocked:kind=auth\x07');
   assert.ok(app.child.kill('SIGINT'));
   const result = await app.result;
@@ -108,7 +112,7 @@ test('core SIGINT releases a startup auth block with a provisional turn', { skip
 });
 
 test('core reports startup configuration failure without claiming readiness', async () => {
-  const app = launch('missing-model', ['--runtime', 'core', '--non-interactive']);
+  const app = launch('missing-model', ['--runtime', 'core', '--non-interactive', '--model', 'account:zai-individual-coding-plan/GLM-5.3']);
   app.child.stdin.end('never submitted\n');
   const result = await app.result;
   assert.equal(result.code, 1, result.out + '\n' + result.err);
@@ -304,6 +308,191 @@ test('a $level suffix on --model overrides the advertised default reasoning leve
   const result = await app.result; clean(result);
   assert.match(result.out, /Selected: account:zai-individual-coding-plan\/GLM-5\.3 \(reasoning: high\)/);
   assert.match(result.out, /Reply 1/);
+});
+
+test('session scope parsing distinguishes omitted and empty lists and rejects incompatible flags', () => {
+  assert.deepEqual(parseArgs([]).sessionScope, {});
+  assert.deepEqual(parseArgs(['--tool-allowlist', '', '--tool-denylist', '']).sessionScope, { toolAllowlist: [], toolDenylist: [] });
+  assert.equal(parseArgs(['--non-interactive']).interactionPolicy, 'block');
+  assert.equal(parseArgs(['--thought-level', 'high']).reasoning, 'high');
+  assert.equal(parseArgs(['--model', 'GLM-5.3$high', '--reasoning-effort', 'high']).reasoning, 'high');
+  for (const args of [
+    ['--tool-allowlist', 'Read,,Write'], ['--tool-denylist', '   '], ['--tool-allowlist', '--disable-mcp'],
+    ['--non-interactive', '--interaction-policy', 'interactive'], ['--interaction-policy', 'allow'],
+    ['--persistence', 'later'], ['--reasoning-effort', ' '], ['--reasoning-effort', ''],
+    ['--resume', 's', '--tool-allowlist', ''], ['--resume', 's', '--disable-mcp'],
+    ['--model', 'GLM-5.3$low', '--reasoning-effort', 'high'],
+  ]) assert.throws(() => parseArgs(args), args.join(' '));
+  assert.throws(() => parseArgs(['--model', 'GLM-5.3$low', '--reasoning-effort', 'high']), /Conflicting reasoning effort values/);
+  const supported = Array.from({ length: 256 }, () => ['--additional-dir', 'inputs']).flat();
+  assert.equal(parseArgs(supported).sessionScope.additionalDirectories.length, 256);
+  assert.throws(() => parseArgs([...supported, '--additional-dir', 'outputs']), /at most 256/);
+  assert.throws(() => parseArgs(['--additional-dir', 'bad\0path']), /NUL character/);
+  assert.deepEqual(parseArgs(['--cwd', '/tmp', '--additional-dir', '  ']).sessionScope.additionalDirectories, ['/tmp/  ']);
+});
+
+for (const allowlist of ['', 'Read,Grep,Glob,Write', 'Read,Bash,Write', 'Read,Write']) {
+  test(`session scoping sends the exact ${allowlist || 'empty'} allowlist and selected create flags`, async () => {
+    const scope = { toolAllowlist: allowlist ? allowlist.split(',') : [], toolDenylist: allowlist ? ['Edit', 'Agent'] : [],
+      mcpServers: [], titleGenerationEnabled: false, offPeakToolEnabled: false, dynamicWorkflowEnabled: false,
+      additionalDirectories: ['/tmp/inputs', '/tmp/outputs'], persistence: 'deferred' };
+    const app = launch('normal', ['--mode', 'yolo', '--tool-allowlist', allowlist, '--tool-denylist', allowlist ? 'Edit, Agent' : '',
+      '--disable-mcp', '--disable-title-gen', '--disable-offpeak', '--disable-dynamic-workflow',
+      '--additional-dir', 'inputs', '--additional-dir', 'outputs', '--cwd', '/tmp', '--persistence', 'deferred',
+      '--auto-resolve-questions'], { env: { TEST_CREATE_SCOPE: JSON.stringify(scope) } });
+    app.child.stdin.end('scope fixture\n');
+    const result = await app.result; clean(result);
+    assert.match(result.out, /Reply 1/);
+  });
+}
+
+for (const mode of ['--non-interactive', '--preserve-default-model']) {
+  test(`${mode} preserves the server model and applies reasoning without session/setModel`, async () => {
+    const app = launch('normal', [mode, '--thought-level', 'high'], { env: {
+      TEST_CREATE_SCOPE: '{"thoughtLevel":"high"}', TEST_THOUGHT_LEVEL: 'high',
+    } });
+    app.child.stdin.end('reasoning\n');
+    const result = await app.result; clean(result);
+    assert.match(result.out, /Selected: server-default\/native-default \(reasoning: high\)/);
+    assert.match(result.out, /Reply 1/);
+  });
+}
+
+test('interactive effort hints at creation and applies to the default TUI model', async () => {
+  const app = launch('normal', ['--reasoning-effort', 'high'], { env: {
+    TEST_CREATE_SCOPE: '{"thoughtLevel":"high"}', TEST_REASONING: 'high',
+  } });
+  app.child.stdin.end('interactive effort\n');
+  const result = await app.result; clean(result);
+  assert.match(result.out, /Selected: account:zai-individual-coding-plan\/GLM-5\.3 \(reasoning: high\)/);
+  assert.match(result.out, /Reply 1/);
+});
+
+test('noninteractive reasoning with an explicit model verifies its model options', async () => {
+  const app = launch('normal', ['--non-interactive', '--model', 'account:zai-individual-coding-plan/GLM-5.3',
+    '--reasoning-effort', 'high'], { env: { TEST_REASONING: 'high' } });
+  app.child.stdin.end('explicit model\n');
+  const result = await app.result; clean(result);
+  assert.match(result.out, /Selected: account:zai-individual-coding-plan\/GLM-5\.3 \(reasoning: high\)/);
+  assert.match(result.out, /Reply 1/);
+});
+
+for (const scenario of ['reasoning-response-mismatch', 'reasoning-subscribe-mismatch', 'explicit-reasoning-mismatch', 'explicit-reasoning-subscribe-mismatch']) {
+  test(`rejects ${scenario} before sending a prompt`, async () => {
+    const explicit = scenario.startsWith('explicit');
+    const app = launch(scenario, ['--non-interactive', '--reasoning-effort', 'high',
+      ...(explicit ? ['--model', 'account:zai-individual-coding-plan/GLM-5.3'] : [])], { env: explicit ? { TEST_REASONING: 'high' }
+      : { TEST_CREATE_SCOPE: '{"thoughtLevel":"high"}', TEST_THOUGHT_LEVEL: 'high' } });
+    app.child.stdin.end('never run\n');
+    const result = await app.result; clean(result, 1);
+    assert.match(result.err, /Selected reasoning level was not applied/);
+    assert.doesNotMatch(result.out, /Reply 1|Selected:/);
+  });
+}
+
+test('an omitted optional independent effort report is not presented as verified', async () => {
+  const app = launch('reasoning-unreported', ['--non-interactive', '--reasoning-effort', 'high'], { env: {
+    TEST_CREATE_SCOPE: '{"thoughtLevel":"high"}', TEST_THOUGHT_LEVEL: 'high',
+  } });
+  app.child.stdin.end('unreported\n');
+  const result = await app.result; clean(result);
+  assert.match(result.out, /^Selected: server-default\/native-default$/m);
+  assert.doesNotMatch(result.out, /reasoning: high/);
+});
+
+test('noninteractive startup block survives rejection of the in-flight setup RPC', async () => {
+  const app = launch('startup-block-before-rejection', ['--runtime', 'core', '--non-interactive', '--reasoning-effort', 'high'], {
+    env: { TEST_CREATE_SCOPE: '{"thoughtLevel":"high"}', TEST_THOUGHT_LEVEL: 'high' },
+  });
+  app.child.stdin.end('never dispatch\n');
+  const result = await app.result;
+  assert.equal(result.code, 1, result.out + '\n' + result.err);
+  assert.deepEqual(oscStates(result.out), ['blocked:kind=question']);
+  assert.doesNotMatch(result.out + result.err, /fixture question|turn completed|unconfirmed|Selected:/);
+});
+
+for (const kind of ['permission', 'question']) {
+  for (const policy of ['deny', 'block']) {
+    test(`noninteractive ${policy} responds to ${kind} after piped EOF`, async () => {
+      const app = launch(`automation-${kind}`, ['--runtime', 'core', '--non-interactive',
+        ...(policy === 'deny' ? ['--interaction-policy', 'deny'] : [])]);
+      app.child.stdin.end(policy === 'block' ? 'one prompt\nnever dispatch\n' : 'one prompt\n');
+      const result = await app.result;
+      assert.equal(result.code, policy === 'deny' ? 0 : 1, result.out + '\n' + result.err);
+      assert.deepEqual(oscStates(result.out), ['idle', 'working', policy === 'deny' ? 'done' : `blocked:kind=${kind}`]);
+      assert.doesNotMatch(result.out + result.err, /\[permission\]|\[question\]|Type \/help|fixture question|unconfirmed/);
+      if (policy === 'block') assert.doesNotMatch(result.out, /provider terminal after decline|turn completed/);
+      else assert.match(result.out, /provider terminal after decline/);
+    });
+  }
+}
+
+test('noninteractive block preserves question kind when ZCode announces it as a permission', async () => {
+  const app = launch('automation-question', ['--runtime', 'core', '--non-interactive'], {
+    env: { TEST_QUESTION_ANNOUNCEMENT: 'McpElicitation' },
+  });
+  app.child.stdin.end('one prompt\nnever dispatch\n');
+  const result = await app.result;
+  assert.equal(result.code, 1, result.out + '\n' + result.err);
+  assert.deepEqual(oscStates(result.out), ['idle', 'working', 'blocked:kind=question']);
+  assert.doesNotMatch(result.out + result.err, /fixture question|provider terminal after decline|turn completed|unconfirmed/);
+});
+
+test('noninteractive subscribed snapshots preserve question and genuine permission kinds', async () => {
+  for (const [toolName, kind] of [
+    ['AskUserQuestion', 'question'], ['McpElicitation', 'question'], ['ExitPlanMode', 'question'], ['Bash', 'permission'],
+  ]) {
+    const client = new EventEmitter();
+    const handlers = new Map();
+    client.handle = (method, handler) => handlers.set(method, handler);
+    const output = [], states = [];
+    const controller = new AppServerController({ client, interactionPolicy: 'block', reportBeforeReady: false,
+      output: text => output.push(text), reporter: { report: snapshot => states.push(snapshot) } });
+    const request = { sessionId: 's', requestId: 'snapshot-request', toolName, turnId: 'resumed' };
+    const snapshot = observedState({ activeTurnId: 'resumed', eventSeq: 1 });
+    snapshot.projection.pendingPermissions = [request];
+    controller.attach('s', snapshot);
+    const method = kind === 'question' ? 'interaction/requestUserInput' : 'interaction/requestPermission';
+    const response = handlers.get(method)(request);
+    assert.deepEqual(response, kind === 'question' ? { action: 'decline' } : { decision: 'deny', reason: 'Client declined request' });
+    await controller.done;
+    assert.equal(controller.status().state, 'blocked');
+    assert.equal(controller.status().kind, kind, toolName);
+    assert.deepEqual(states.map(state => [state.state, state.kind]), [['blocked', kind]], toolName);
+    assert.doesNotMatch(output.join(''), /Use \/|Proposed input/);
+  }
+});
+
+test('noninteractive TTY submits slash prompts literally without interactive chrome', async () => {
+  const input = new PassThrough(), output = new PassThrough(), errorOutput = new PassThrough();
+  input.isTTY = output.isTTY = true;
+  const rawModes = [];
+  input.setRawMode = value => rawModes.push(value);
+  let stdout = '', stderr = '';
+  output.on('data', text => { stdout += text; });
+  errorOutput.on('data', text => { stderr += text; });
+  const adapters = offlineAdapters({ write() {} });
+  const prepare = adapters.prepareDesktopRuntime;
+  adapters.prepareDesktopRuntime = async options => {
+    const runtime = await prepare(options);
+    return { ...runtime, env: { ...runtime.env, TEST_SCENARIO: 'automation-literal', TEST_AUTO_RESOLVE_QUESTIONS: '1', TEST_PRESERVE_MODEL: '1' } };
+  };
+  const pending = main({ argv: ['--non-interactive'], input, output, errorOutput }, adapters);
+  input.end('/review src/a.js\n');
+  assert.equal(await pending, 0, stdout + stderr);
+  assert.match(stdout, /literal prompt accepted/);
+  assert.doesNotMatch(stdout, /\x1b\[\?2004[hl]|Type \/help|Unknown command/);
+  assert.deepEqual(rawModes, []);
+});
+
+test('noninteractive SIGTERM closes through controller state, without submitting /exit', { skip: process.platform === 'win32' }, async () => {
+  const app = launch('automation-signal', ['--non-interactive']);
+  app.send('/review src/a.js');
+  await app.wait('literal prompt accepted');
+  assert.ok(app.child.kill('SIGTERM'));
+  const result = await app.result; clean(result, 143);
+  assert.match(result.out, /stopped by client/);
+  assert.doesNotMatch(result.out, /unconfirmed/);
 });
 
 function controllerFixture() {

@@ -24,7 +24,7 @@ return {
   },
   desktopAccount: async (path, { home, model }) => {
     if (path !== '/fixture-active/catalog.json' || home !== '/fixture-home') throw new Error('Bad bootstrap');
-    const selection = model ? { providerId: model.slice(0, model.indexOf('/')), modelId: model.slice(model.indexOf('/') + 1) }
+    const selection = model === null ? null : model ? { providerId: model.slice(0, model.indexOf('/')), modelId: model.slice(model.indexOf('/') + 1) }
       : { providerId: 'account:zai-individual-coding-plan', modelId: 'GLM-5.3' };
     return { selection, redact: text => text.replaceAll('header-secret', '[REDACTED]'), config: { revision: 'fixture-account', basedOnZCodeBuiltinRevision: 'zcode-builtin:7:active-path-digest' },
       runtimeHeaders: async () => {

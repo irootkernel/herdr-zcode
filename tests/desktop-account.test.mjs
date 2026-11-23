@@ -242,6 +242,9 @@ test('projected account shares exact overlay, model validation and stream redact
   const account = await projectedAccount(f.catalogPath, authPath);
   const desktop = await desktopAccount(f.catalogPath, f.options);
   assert.deepEqual(account.config, desktop.config);
+  const desktopPreserved = await desktopAccount(f.catalogPath, { ...f.options, model: null });
+  assert.equal(desktopPreserved.selection, null);
+  assert.deepEqual(desktopPreserved.config, desktop.config);
   assert.deepEqual(account.selection, selected);
   assert.doesNotMatch(JSON.stringify(account.config), /header-secret|user-fixture/);
   assert.deepEqual(await account.runtimeHeaders(request), { headersApplied: true, requestAuth: { apiKey: 'header-secret' } });
