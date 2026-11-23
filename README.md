@@ -94,15 +94,15 @@ Ctrl-C cancels active work. When no work is running, Ctrl-C exits. The default p
 
 ### Choosing a model and reasoning level
 
-By default herdr-zcode uses `account:zai-individual-coding-plan/GLM-5.3` with the reasoning level the model advertises. To override the level, append `$level` to the model, following ZCode's own model-reference convention:
+Without `--model`, herdr-zcode uses the model and effort selected by ZCode for the session. To select GLM-5.4 with max effort, use ZCode's model-reference syntax:
 
 ```sh
-herdr-zcode --cwd /path/to/project --model 'account:zai-individual-coding-plan/GLM-5.3$max'
+herdr-zcode --cwd /path/to/project --model 'account:zai-individual-coding-plan/GLM-5.4$max'
 ```
 
-Keep the model reference in single quotes so the shell passes `$max` literally. The part before `$` selects the model; the suffix after it names the reasoning level. GLM-5.3 and GLM-5.3-Flash advertise `low`, `high`, and `max`, and default to `max`. A level the model does not advertise is rejected at startup with the supported list. The startup line confirms what was applied, for example `Selected: account:zai-individual-coding-plan/GLM-5.3 (reasoning: max)`.
+Keep the model reference in single quotes so the shell passes `$max` literally. An explicit model without a suffix uses the effort advertised by ZCode. The startup line shows the applied model and any reported effort, such as `Selected: account:zai-individual-coding-plan/GLM-5.4 (reasoning: max)`.
 
-Use `--reasoning-effort <level>` or its alias `--thought-level <level>` to choose effort separately. If you also use a `$level` model suffix, the values must agree. With no `--model`, `--non-interactive` and `--preserve-default-model` retain the server's selection and apply any requested effort separately.
+Use `--reasoning-effort <level>` or its alias `--thought-level <level>` to choose effort separately. If you also use a `$level` model suffix, the values must agree. With a Desktop login, the wrapper uses a newer matching model catalog downloaded by ZCode when available. If GLM-5.4 is missing, open ZCode Desktop to refresh its Coding Plan model catalog. See [catalog selection](docs/app-server.md#startup-and-protocol) for overrides and fallbacks.
 
 ### Running a scoped session
 

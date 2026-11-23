@@ -25,13 +25,13 @@ If caller verification fails, follow the shared skill's `dev-herdr --identify-ca
 
 ## Model and reasoning level
 
-The default model is `account:zai-individual-coding-plan/GLM-5.3`. To request the `max` reasoning level explicitly, run:
+Omit `--model` to use the model and effort ZCode selects for the session. To request GLM-5.4 at `max` effort explicitly, run:
 
 ```sh
-herdr-zcode --cwd /path/to/project --model 'account:zai-individual-coding-plan/GLM-5.3$max'
+herdr-zcode --cwd /path/to/project --model 'account:zai-individual-coding-plan/GLM-5.4$max'
 ```
 
-Keep the model reference in single quotes so the shell passes `$max` literally. Without a `$level` suffix, the model's advertised default applies; GLM-5.3 defaults to `max`. Check the startup line for the selected model and reasoning level. See the [README](README.md#choosing-a-model-and-reasoning-level) for details.
+Keep the model reference in single quotes so the shell passes `$max` literally. An explicit model without a suffix uses the model's advertised default effort. Check the startup line for the selected model and effort. See the [README](README.md#choosing-a-model-and-reasoning-level) for details.
 
 ## Start an executor and send a task
 

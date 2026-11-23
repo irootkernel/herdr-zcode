@@ -233,6 +233,62 @@ test('runtime binds a per-executor public catalog path and cleans up without tou
   assert.equal(await readFile(f.credentialsPath, 'utf8'), originalCredential);
 });
 
+test('Desktop runtime prefers the newer catalog from the matching ZCode cache', async t => {
+  const f = await fixture(t);
+  const appVersion = '4.0.0';
+  const plist = join(f.appBundle, 'Contents/Info.plist');
+  await writeFile(plist, (await readFile(plist, 'utf8')).replace(readToolchains().ZCODE_APP_MIN_VERSION, appVersion));
+  const bundled = { schemaVersion: 1, ...f.catalog, revision: 44 };
+  bundled.config.modelConfigRules = {};
+  await writeFile(f.catalogPath, JSON.stringify(bundled));
+  const active = structuredClone(bundled);
+  active.revision = 48;
+  active.config.providerConfigRules.providerRules[0].config.builtinModelIds.unshift('GLM-5.4');
+  const arch = { arm64: 'aarch64', x64: 'x86_64' }[process.arch] ?? process.arch;
+  const platform = process.platform === 'win32' ? 'windows' : process.platform;
+  const base = join(f.home, '.zcode/v2/runtime/provider', `${platform}-${arch}`);
+  const cachePath = (origin, version = appVersion) => join(base, version, `endpoint-${digest(origin).slice(0, 32)}`, 'zcode-builtin.json');
+  const official = cachePath('https://zcode.z.ai');
+  const alternate = cachePath('https://other.example');
+  for (const [path, revision] of [[official, 48], [alternate, 90], [cachePath('https://zcode.z.ai', '4.1.0'), 100]]) {
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, JSON.stringify({ ...active, revision }));
+  }
+  const options = { env: f.env, home: f.home, appBundle: f.appBundle, tmpRoot: f.root };
+  const runtime = await prepareDesktopRuntime(options);
+  try {
+    assert.notEqual(await realpath(runtime.configPath), await realpath(official));
+    assert.equal(runtime.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE, runtime.configPath);
+    assert.deepEqual(JSON.parse(await readFile(runtime.configPath, 'utf8')), active);
+    const account = await desktopAccount(runtime.configPath, { ...f.options, model: `${providerId}/GLM-5.4` });
+    assert.deepEqual(account.selection, { providerId, modelId: 'GLM-5.4' });
+    assert.equal(account.config.basedOnZCodeBuiltinRevision, `zcode-builtin:48:${digest(runtime.configPath)}`);
+  } finally { await runtime.close(); }
+  assert.deepEqual(JSON.parse(await readFile(official, 'utf8')), active);
+
+  const direct = { ...options, copyCatalog: false };
+  const bundledPath = await realpath(f.catalogPath);
+  const selected = await prepareDesktopRuntime({ ...direct, env: { ...f.env, ZCODE_BASE_URL: 'https://other.example/api' } });
+  assert.equal(selected.configPath, alternate);
+  const explicit = await prepareDesktopRuntime({ ...direct, env: { ...f.env, ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: f.catalogPath } });
+  assert.equal(explicit.configPath, f.catalogPath);
+  const projected = await prepareDesktopRuntime({ ...direct, useKeychain: false });
+  try {
+    assert.equal(projected.configPath, bundledPath);
+    assert.equal(projected.withOSCredentialReader, undefined);
+  } finally { await projected.close(); }
+  const skipped = await prepareDesktopRuntime({ ...direct, skipInspect: true });
+  assert.equal(skipped.configPath, bundledPath);
+
+  for (const bytes of [JSON.stringify({ ...active, revision: 43 }), JSON.stringify({ ...active, schemaVersion: 2 }), '{broken']) {
+    await writeFile(official, bytes);
+    const fallback = await prepareDesktopRuntime(direct);
+    assert.equal(fallback.configPath, bundledPath);
+  }
+  await rm(official);
+  assert.equal((await prepareDesktopRuntime(direct)).configPath, bundledPath);
+});
+
 const projection = { providerId, identity: 'user-fixture', apiKey: 'header-secret' };
 
 test('projected account shares exact overlay, model validation and stream redaction', async t => {

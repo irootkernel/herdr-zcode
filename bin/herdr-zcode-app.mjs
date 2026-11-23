@@ -41,7 +41,7 @@ export function parseArgs(argv) {
     if (arg === '--skip-desktop-inspect') { options.skipDesktopInspect = true; continue; }
     if (arg === '--consume-auth-file') { options.consumeAuthFile = true; continue; }
     if (arg === '--non-interactive') { options.nonInteractive = true; continue; }
-    if (arg === '--preserve-default-model') { options.preserveDefaultModel = true; continue; }
+    if (arg === '--preserve-default-model') continue; // Compatibility with older invocations.
     if (arg === '--auto-resolve-questions') { options.autoResolveQuestions = true; continue; }
     if (Object.hasOwn(CREATE_SWITCHES, arg)) {
       const [field, value] = CREATE_SWITCHES[arg];
@@ -253,8 +253,7 @@ Interactive input accepts /help and /exit. EOF drains queued work. Ctrl-C stops 
     for (const { content, prompt } of early) admit(content, prompt);
     if (eof) controller.eof();
     if (controller.closing) throw exitStartup;
-    const preserve = options.model === undefined && (options.nonInteractive || options.preserveDefaultModel);
-    const accountModel = preserve ? null : options.model;
+    const accountModel = options.model ?? null;
     const account = authFile
       ? await (adapters.projectedAccount ?? projectedAccount)(runtime.configPath, resolve(options.cwd, authFile), {
         model: accountModel, consume: options.consumeAuthFile,
@@ -285,7 +284,7 @@ Interactive input accepts /help and /exit. EOF drains queued work. Ctrl-C stops 
     controller.sessionId = sessionId;
     controller.snapshot(created);
     if (controller.closing) throw exitStartup;
-    const selection = preserve ? null : account.selection;
+    const selection = account.selection;
     const current = created.settings?.model?.current ?? null;
     controller.expectedModel = selection ?? current;
     let reasoningLevel = options.reasoning;
@@ -314,6 +313,8 @@ Interactive input accepts /help and /exit. EOF drains queued work. Ctrl-C stops 
     if (options.reasoning) {
       const subscribedEffort = checkReasoning(subscribed?.snapshot, options.reasoning, Boolean(selection));
       if (!selection && !reasoningVerified && !subscribedEffort) reasoningLevel = undefined;
+    } else if (!selection) {
+      reasoningLevel = subscribedModel?.options?.reasoningLevel ?? subscribed?.snapshot?.settings?.thoughtLevel?.current;
     }
     controller.expectedModel ??= subscribedModel;
     if (controller.expectedModel) {

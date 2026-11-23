@@ -19,9 +19,14 @@ const event = (type, payload = {}, extra = {}) => send({ method: 'session/event'
 const reverse = (method, params, id = `server-${waiting.size + 1}`) => new Promise(resolve => {
   waiting.set(id, resolve); send({ id, method, params });
 });
-const available = [{ ref: { providerId: 'account:zai-individual-coding-plan', modelId: 'GLM-5.3' }, reasoning: { levels: [{ value: 'low' }, { value: 'high' }, { value: 'max' }], defaultLevel: 'max' } }];
+const available = ['GLM-5.3', 'GLM-5.4'].map(modelId => ({
+  ref: { providerId: 'account:zai-individual-coding-plan', modelId },
+  reasoning: { levels: [{ value: 'low' }, { value: 'high' }, { value: 'max' }], defaultLevel: 'max' },
+}));
 const preserveDefault = process.env.TEST_PRESERVE_MODEL === '1';
-let current = preserveDefault ? { providerId: 'server-default', modelId: 'native-default' } : available[0].ref;
+const nativeDefault = process.env.TEST_DEFAULT_MODEL ? JSON.parse(process.env.TEST_DEFAULT_MODEL)
+  : { providerId: 'server-default', modelId: 'native-default' };
+let current = preserveDefault ? nativeDefault : available[0].ref;
 let thoughtChanges = 0, thoughtLevel, interactionObserved;
 const snapshot = () => ({ session: { sessionId }, settings: { model: {
   current: scenario === 'wrong-model' ? { providerId: 'wrong', modelId: 'other' } : current,

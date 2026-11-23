@@ -13,7 +13,7 @@ function launch(scenario = 'normal', args = [], options = {}) {
   const { env, ...spawnOptions } = options;
   const child = spawn(process.execPath, [entry, ...args], { env: { ...process.env, TEST_SCENARIO: scenario,
     TEST_AUTO_RESOLVE_QUESTIONS: args.includes('--non-interactive') || args.includes('--auto-resolve-questions') ? '1' : '0',
-    TEST_PRESERVE_MODEL: !args.includes('--model') && (args.includes('--non-interactive') || args.includes('--preserve-default-model')) ? '1' : '0',
+    TEST_PRESERVE_MODEL: args.includes('--model') ? '0' : '1',
     ...env }, stdio: ['pipe', 'pipe', 'pipe'], ...spawnOptions });
   let out = '', err = '';
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
@@ -267,7 +267,8 @@ test('stop/close timeouts are bounded, force child exit and do not claim cancell
 });
 
 test('exact catalog model is required; startup failure closes the created session', async () => {
-  const app = launch('missing-model'); app.child.stdin.end('never submitted\n');
+  const app = launch('missing-model', ['--model', 'account:zai-individual-coding-plan/GLM-5.3']);
+  app.child.stdin.end('never submitted\n');
   const result = await app.result; clean(result, 1);
   assert.match(result.err, /selected model and catalog compatibility/);
   assert.doesNotMatch(result.out, /turn completed/);
@@ -358,22 +359,40 @@ for (const mode of ['--non-interactive', '--preserve-default-model']) {
   });
 }
 
-test('interactive effort hints at creation and applies to the default TUI model', async () => {
+test('interactive effort hints at creation and applies to the native TUI model', async () => {
   const app = launch('normal', ['--reasoning-effort', 'high'], { env: {
-    TEST_CREATE_SCOPE: '{"thoughtLevel":"high"}', TEST_REASONING: 'high',
+    TEST_CREATE_SCOPE: '{"thoughtLevel":"high"}', TEST_THOUGHT_LEVEL: 'high',
   } });
   app.child.stdin.end('interactive effort\n');
   const result = await app.result; clean(result);
-  assert.match(result.out, /Selected: account:zai-individual-coding-plan\/GLM-5\.3 \(reasoning: high\)/);
+  assert.match(result.out, /Selected: server-default\/native-default \(reasoning: high\)/);
   assert.match(result.out, /Reply 1/);
 });
 
+for (const runtime of ['tui', 'core']) {
+  test(`${runtime} keeps the native model and effort when --model is omitted`, async () => {
+    const app = launch('normal', ['--runtime', runtime], { env: {
+      TEST_DEFAULT_MODEL: JSON.stringify({ providerId: 'account:zai-individual-coding-plan',
+        modelId: 'GLM-5.4', options: { reasoningLevel: 'high' } }),
+    } });
+    app.child.stdin.end('native model\n');
+    const result = await app.result;
+    if (runtime === 'tui') clean(result);
+    else {
+      assert.equal(result.code, 0, result.out + '\n' + result.err);
+      assert.deepEqual(oscStates(result.out), ['idle', 'working', 'done']);
+    }
+    assert.match(result.out, /Selected: account:zai-individual-coding-plan\/GLM-5\.4 \(reasoning: high\)/);
+    assert.match(result.out, /Reply 1/);
+  });
+}
+
 test('noninteractive reasoning with an explicit model verifies its model options', async () => {
-  const app = launch('normal', ['--non-interactive', '--model', 'account:zai-individual-coding-plan/GLM-5.3',
-    '--reasoning-effort', 'high'], { env: { TEST_REASONING: 'high' } });
+  const app = launch('normal', ['--non-interactive', '--model', 'account:zai-individual-coding-plan/GLM-5.4',
+    '--reasoning-effort', 'max'], { env: { TEST_REASONING: 'max' } });
   app.child.stdin.end('explicit model\n');
   const result = await app.result; clean(result);
-  assert.match(result.out, /Selected: account:zai-individual-coding-plan\/GLM-5\.3 \(reasoning: high\)/);
+  assert.match(result.out, /Selected: account:zai-individual-coding-plan\/GLM-5\.4 \(reasoning: max\)/);
   assert.match(result.out, /Reply 1/);
 });
 
@@ -564,7 +583,8 @@ test('an approved request cannot silently approve a later stale reannouncement',
 });
 
 test('unexpected model substitution fails instead of silently selecting another model', async () => {
-  const app = launch('wrong-model'); app.child.stdin.end('never run\n');
+  const app = launch('wrong-model', ['--model', 'account:zai-individual-coding-plan/GLM-5.3']);
+  app.child.stdin.end('never run\n');
   const result = await app.result; clean(result, 1);
   assert.doesNotMatch(result.out, /turn completed/);
 });
