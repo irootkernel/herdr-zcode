@@ -4,9 +4,7 @@ This directory holds temporary execution source-of-truth (SOT) dossiers for adop
 
 ## Adopted dossiers
 
-| Dossier | Owning Epic | Purpose | Retirement condition |
-| --- | --- | --- | --- |
-| [TODO-HERDR-CORE-RUNTIME-AND-MULGAE-SUPPORT.md](TODO-HERDR-CORE-RUNTIME-AND-MULGAE-SUPPORT.md) | [EPIC-001](../roadmap/README.md#epic-001-shared-core-herdr-core-runtime-and-mulgae-integration-support) | Detailed module blueprint, exact CLI/protocol/OSC 7501 contracts, anti-regression guardrails, and per-Task implementation checklists for `TASK-001` through `TASK-006`. | Promote durable outcomes to canonical docs (`README.md`, `HERDR.md`, `docs/app-server.md`, `docs/toolchains.md`), replace `Detailed SOT` with `Canonical Outcomes` in `docs/roadmap/README.md`, and remove this file and row at `EPIC-001` closeout. |
+There are no active dossiers.
 
 ## Lifecycle rule
 

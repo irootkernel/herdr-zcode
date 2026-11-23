@@ -366,7 +366,7 @@ flowchart TD
 
 ## 6. 확정된 설계 결정 및 `EPIC-001` 실행 로드맵
 
-2026-11-23 확정된 설계 결정과 세부 Task 계획은 [docs/roadmap/README.md](roadmap/README.md#epic-001-shared-core-herdr-core-runtime-and-mulgae-integration-support) (`EPIC-001`, `TASK-001`~`TASK-006`) 및 실행 SOT dossier([TODO-HERDR-CORE-RUNTIME-AND-MULGAE-SUPPORT.md](todo/TODO-HERDR-CORE-RUNTIME-AND-MULGAE-SUPPORT.md))에 등록되었다.
+2026-11-23 확정된 설계 결정과 세부 Task 계획은 [docs/roadmap/README.md](roadmap/README.md#epic-001-shared-core-herdr-core-runtime-and-mulgae-integration-support) (`EPIC-001`, `TASK-001`~`TASK-006`)에 등록되었다. 실행 당시의 임시 dossier는 Git 이력에 남아 있다.
 
 | 결정 항목 | 확정안 | 비고 |
 | --- | --- | --- |

@@ -17,7 +17,7 @@ Epic status is independent of child Task status. Completing every member Task do
 
 | Epic | Status | Goal |
 | --- | --- | --- |
-| [EPIC-001](#epic-001-shared-core-herdr-core-runtime-and-mulgae-integration-support) | In Review | Add explicit `--runtime core` (`herdr-core 0.1.20` OSC 7501 + fast non-detached teardown) alongside default `--runtime tui` over a shared core, make `herdr-zcode` directly executable in isolated/sandboxed environments without `nvm`, and add sandbox auth projection, session tool scoping, non-interactive fail-closed handling, and independent reasoning effort control for Mulgae integration. |
+| [EPIC-001](#epic-001-shared-core-herdr-core-runtime-and-mulgae-integration-support) | Completed | Add explicit `--runtime core` (`herdr-core 0.1.20` OSC 7501 + fast non-detached teardown) alongside default `--runtime tui` over a shared core, make `herdr-zcode` directly executable in isolated/sandboxed environments without `nvm`, and add sandbox auth projection, session tool scoping, non-interactive fail-closed handling, and independent reasoning effort control for Mulgae integration. |
 
 ## Adopted execution order
 
@@ -29,13 +29,13 @@ Execute `EPIC-001` Tasks sequentially in table order (`TASK-001` through `TASK-0
 
 ## EPIC-001: Shared-core herdr-core runtime and Mulgae integration support
 
-Status: In Review
+Status: Completed
 
-Detailed SOT: [temporary execution dossier](../todo/TODO-HERDR-CORE-RUNTIME-AND-MULGAE-SUPPORT.md)
+Canonical Outcomes: [CLI and automation](../../README.md), [Herdr operations](../../HERDR.md), [app-server architecture and certification](../app-server.md), and [toolchain and standalone installation](../toolchains.md).
 
 Goal: evolve `herdr-zcode` into a dual-runtime standalone CLI supporting both legacy `herdr 0.9.5` (`--runtime tui`, default) and `herdr-core 0.1.20` (`--runtime core`) over one shared protocol/controller/account core with minimal runtime adapters, while satisfying every runtime, security, lifecycle, and session-control requirement needed for `mulgae` to run ZCode inside isolated `herdr-core` + Seatbelt panes using Grok-parity `Read`/`Write` scratch delivery.
 
-Locked architectural boundaries (see the [temporary execution dossier](../todo/TODO-HERDR-CORE-RUNTIME-AND-MULGAE-SUPPORT.md) for exact contracts, line references, code skeletons, and pitfalls to avoid):
+The [app-server architecture](../app-server.md) and [CLI guide](../../README.md) document these architectural boundaries.
 
 - **Explicit runtime selection (`--runtime <tui|core>`, default `tui`, no `auto`)**: omitting `--runtime` preserves existing legacy `herdr 0.9.5` TUI behavior 100%; `--runtime core` deterministically enables OSC 7501 reporting, non-detached child ownership, and fast `SIGHUP`/`SIGTERM` teardown without ambient environment-variable guessing.
 - **Shared core + thin runtime adapters (no duplicated controller/entrypoint/client)**: one `bin/herdr-zcode-app.mjs`, one `AppServerController` computing one canonical structured status snapshot, one `AppServerClient`, one `desktop-account.mjs` overlay/redactor engine, and one `desktop-runtime.mjs`. Runtime differences stay confined to `lib/runtime-profile.mjs` and the two thin reporter adapters (`lib/herdr-reporter.mjs` for `tui`, `lib/osc7501-reporter.mjs` for `core`).
@@ -54,9 +54,9 @@ Locked architectural boundaries (see the [temporary execution dossier](../todo/T
 
 ### Epic acceptance
 
-- [ ] Every member Task (`TASK-001` through `TASK-006`) is implemented and verified with recorded evidence matching its verification criteria.
-- [ ] `tui` (`--runtime tui` and default omitted flag) preserves 100% backward compatibility with legacy `herdr 0.9.5` and all pre-existing offline tests (`./dev test`), with zero duplicated controller/client/entrypoint code between `tui` and `core`.
-- [ ] `herdr-zcode --runtime core` runs directly via the installed `herdr-zcode` executable under empty `HOME`, unset `NVM_DIR`, and `PATH=/usr/bin:/bin`, emits valid OSC 7501 state/blocked/error transitions (`Terminal.reported == true`, `turn >= 1`), never emits `idle` on turn failure, strips `HC_*` and `HERDR_*` from child env, and leaves zero surviving `ZCode` processes after `SIGHUP`/`hc kill` (<150ms teardown budget).
-- [ ] Sandbox-safe execution (`--auth-file --consume-auth-file`, `--runtime-dir`/`TMPDIR`, `--tool-allowlist`, `--tool-denylist`, `--disable-mcp`, `--disable-title-gen`, `--non-interactive`, `--additional-dir`, `--reasoning-effort`) is verified offline and in live `herdr-core 0.1.20` + `ZCode.app >= 3.18.2` certification (including out-of-`--cwd` scratch `Read` + `Write` under `mode: yolo`).
-- [ ] `package.json` `files`, `./dev pack`, and `./dev install` bundle every new module cleanly without breaking `./dev` toolchain pinning.
-- [ ] Durable behavior, architecture, CLI contracts, and testing guidance are promoted into `README.md`, `HERDR.md`, `docs/app-server.md`, and `docs/toolchains.md`; `Detailed SOT` is replaced with `Canonical Outcomes`; the temporary dossier and its `docs/todo/README.md` entry are removed upon closeout; and explicit Epic acceptance is granted.
+- [x] Every member Task (`TASK-001` through `TASK-006`) is implemented and verified with recorded evidence matching its verification criteria.
+- [x] `tui` (`--runtime tui` and default omitted flag) preserves 100% backward compatibility with legacy `herdr 0.9.5` and all pre-existing offline tests (`./dev test`), with zero duplicated controller/client/entrypoint code between `tui` and `core`.
+- [x] `herdr-zcode --runtime core` runs directly via the installed `herdr-zcode` executable under empty `HOME`, unset `NVM_DIR`, and `PATH=/usr/bin:/bin`, emits valid OSC 7501 state/blocked/error transitions (`Terminal.reported == true`, `turn >= 1`), never emits `idle` on turn failure, strips `HC_*` and `HERDR_*` from child env, and leaves zero surviving `ZCode` processes after `SIGHUP`/`hc kill` (<150ms teardown budget).
+- [x] Sandbox-safe execution (`--auth-file --consume-auth-file`, `--runtime-dir`/`TMPDIR`, `--tool-allowlist`, `--tool-denylist`, `--disable-mcp`, `--disable-title-gen`, `--non-interactive`, `--additional-dir`, `--reasoning-effort`) is verified offline and in live `herdr-core 0.1.20` + `ZCode.app >= 3.18.2` certification (including out-of-`--cwd` scratch `Read` + `Write` under `mode: yolo`).
+- [x] `package.json` `files`, `./dev pack`, and `./dev install` bundle every new module cleanly without breaking `./dev` toolchain pinning.
+- [x] Durable behavior, architecture, CLI contracts, and testing guidance are promoted into `README.md`, `HERDR.md`, `docs/app-server.md`, and `docs/toolchains.md`; `Detailed SOT` is replaced with `Canonical Outcomes`; the temporary dossier and its `docs/todo/README.md` entry are removed upon closeout; and explicit Epic acceptance is granted.
