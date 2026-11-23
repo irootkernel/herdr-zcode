@@ -10,3 +10,5 @@ dist/
 !.gaori/tester/rules/
 .gaori/tester/rules/*
 !.gaori/tester/rules/*.yaml
+
+.sorage/
