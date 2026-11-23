@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
@@ -32,6 +32,7 @@ function launch(scenario = 'normal', args = [], options = {}) {
         if (Date.now() > deadline || child.exitCode !== null) throw new Error(`Missing ${needle}\n${out}\n${err}`);
         await new Promise(resolve => setTimeout(resolve, 5));
       }
+      return { out, err };
     },
   };
 }
@@ -53,15 +54,111 @@ test('real entrypoint captures early piped prompts/EOF, bootstraps, renders two 
   assert.match(result.err, /report idle/);
 });
 
-test('core entrypoint runs a turn without the legacy Herdr reporter', async () => {
+const oscStates = text => [...text.matchAll(/\x1b\]7501;state=([^\x07]+)\x07/g)].map(match => match[1]);
+
+test('core entrypoint reports idle, working and done, with normal EOF closing the session', async () => {
   const app = launch('normal', ['--runtime', 'core']);
   app.child.stdin.end('first prompt\n');
   const result = await app.result;
   assert.equal(result.code, 0, result.out + '\n' + result.err);
   assert.match(result.out, /Reply 1/);
+  assert.deepEqual(oscStates(result.out), ['idle', 'working', 'done']);
+  assert.ok(result.out.indexOf('ZCode session:') < result.out.indexOf('\x1b]7501;state=idle'));
+  assert.ok(result.out.indexOf('Reply 1') < result.out.indexOf('\x1b]7501;state=done'));
+  assert.doesNotMatch(result.out, /session\/close unconfirmed/);
   assert.match(result.err, /\[child exited\]/);
   assert.doesNotMatch(result.err, /\[report(?: |er released)/);
 });
+
+for (const [scenario, outcome] of [
+  ['quota', 'blocked:kind=quota'], ['rpc-quota', 'blocked:kind=quota'],
+  ['rate-limit', 'blocked:kind=rate_limit'], ['turn-auth', 'blocked:kind=auth'],
+  ['error-result', 'error'], ['failure', 'error'],
+]) {
+  test(`core reports ${scenario} as ${outcome} without returning to idle`, async () => {
+    const app = launch(scenario, ['--runtime', 'core']);
+    app.child.stdin.end('run\n');
+    const result = await app.result;
+    assert.equal(result.code, 1, result.out + '\n' + result.err);
+    assert.deepEqual(oscStates(result.out), ['idle', 'working', outcome]);
+    assert.doesNotMatch(result.out + result.err, /header-secret|private provider failure|PRIVATE STACK/);
+  });
+}
+
+test('core startup authentication is observable before a supervisor stops the blocked wrapper', { skip: process.platform === 'win32' }, async () => {
+  const app = launch('startup-auth', ['--runtime', 'core', '--non-interactive']);
+  const { out } = await app.wait('\x1b]7501;state=blocked:kind=auth\x07');
+  assert.equal(app.child.exitCode, null);
+  assert.deepEqual(oscStates(out), ['blocked:kind=auth']);
+  assert.ok(app.child.kill('SIGHUP'));
+  const result = await app.result;
+  assert.equal(result.code, 129, result.out + '\n' + result.err);
+  assert.deepEqual(oscStates(result.out), ['blocked:kind=auth']);
+  assert.doesNotMatch(result.out + result.err, /header-secret|auth body/);
+});
+
+test('core SIGINT releases a startup auth block with a provisional turn', { skip: process.platform === 'win32' }, async () => {
+  const app = launch('startup-auth-with-provisional-turn', ['--runtime', 'core', '--non-interactive']);
+  await app.wait('\x1b]7501;state=blocked:kind=auth\x07');
+  assert.ok(app.child.kill('SIGINT'));
+  const result = await app.result;
+  assert.equal(result.code, 130, result.out + '\n' + result.err);
+  assert.deepEqual(oscStates(result.out), ['blocked:kind=auth']);
+  assert.doesNotMatch(result.out, /session\/close unconfirmed/);
+});
+
+test('core reports startup configuration failure without claiming readiness', async () => {
+  const app = launch('missing-model', ['--runtime', 'core', '--non-interactive']);
+  app.child.stdin.end('never submitted\n');
+  const result = await app.result;
+  assert.equal(result.code, 1, result.out + '\n' + result.err);
+  assert.deepEqual(oscStates(result.out), ['error']);
+  assert.doesNotMatch(result.out, /session\/close unconfirmed/);
+});
+
+test('core withholds provisional startup permissions until subscription reconciles them', async () => {
+  const app = launch('snapshot-permission-reconciled', ['--runtime', 'core']);
+  await app.wait('Type /help');
+  app.child.stdin.end('prompt\n');
+  const result = await app.result;
+  assert.equal(result.code, 0, result.out + '\n' + result.err);
+  assert.deepEqual(oscStates(result.out), ['idle', 'working', 'done']);
+});
+
+for (const [signal, code, scenario] of [['SIGHUP', 129, 'hang-cleanup'], ['SIGTERM', 143, 'hang-bootstrap']]) {
+  test(`core ${signal} reaps a stubborn child in under 100ms during ${scenario}`, { skip: process.platform === 'win32' }, async t => {
+    const app = launch(scenario, ['--runtime', 'core'], { detached: true,
+      env: { ...process.env, TEST_SCENARIO: scenario, TEST_CAPTURE_CHILD_SCOPE: '1' } });
+    const groupPid = app.child.pid;
+    let reaped = false;
+    t.after(() => {
+      // This test created a private group so cleanup cannot target the runner.
+      if (reaped) return;
+      try { process.kill(-groupPid, 'SIGKILL'); }
+      catch (error) { if (error.code !== 'ESRCH') throw error; }
+    });
+    if (scenario === 'hang-cleanup') app.send('hang');
+    const { err } = await app.wait(scenario === 'hang-cleanup' ? 'Type /help' : '[child runtime headers requested]');
+    const childPid = Number(/\[child pid (\d+)\]/.exec(err)?.[1]);
+    assert.ok(childPid > 1);
+    const sessionColumn = process.platform === 'darwin' ? 'sess=' : 'sid=';
+    const scope = pid => execFileSync('/bin/ps', ['-o', 'pgid=', '-o', sessionColumn, '-p', String(pid)], { encoding: 'utf8' }).trim();
+    assert.equal(scope(childPid), scope(groupPid));
+    assert.equal(Number(scope(groupPid).split(/\s+/)[0]), groupPid);
+    const started = performance.now();
+    assert.ok(app.child.kill(signal));
+    const result = await app.result;
+    assert.throws(() => process.kill(childPid, 0), { code: 'ESRCH' });
+    assert.throws(() => process.kill(groupPid, 0), { code: 'ESRCH' });
+    reaped = true;
+    const elapsed = performance.now() - started;
+    t.diagnostic(`${signal} from send to wrapper and child ESRCH: ${elapsed.toFixed(1)}ms`);
+    assert.ok(elapsed < 100, `${signal} took ${elapsed.toFixed(1)}ms to reap owned processes`);
+    assert.equal(result.code, code, result.out + '\n' + result.err);
+    assert.match(result.err, /\[child status SIGKILL\]/);
+    assert.doesNotMatch(result.out + result.err, /session\/(?:stop|close) unconfirmed|exit not observed/);
+  });
+}
 
 test('permission allow/deny, simultaneous requests and reannouncement remain responsive during a turn', async () => {
   const app = launch('permissions'); app.send('permissions');
@@ -395,6 +492,24 @@ test('--prompt-file sends multiline content as one prompt, including lines that 
   const app = launch('prompt-file', ['--prompt-file', fileURLToPath(new URL('./fixtures/app-server-prompt.txt', import.meta.url))]);
   app.child.stdin.end(); const result = await app.result; clean(result);
   assert.equal(result.out.match(/\[turn completed/g)?.length, 1); assert.match(result.out, /Reply 1/);
+});
+
+test('an unreadable TUI prompt file creates and releases no Herdr reporter', async () => {
+  const input = new PassThrough(), output = new PassThrough(), errorOutput = new PassThrough();
+  const calls = [];
+  const path = fileURLToPath(new URL('./fixtures/app-server-prompt.txt/child', import.meta.url));
+  const code = await main({ argv: ['--prompt-file', path], input, output, errorOutput }, {
+    createHerdrReporter() {
+      calls.push('create');
+      return { report: () => calls.push('report'), close: () => calls.push('release') };
+    },
+    prepareDesktopRuntime() {
+      calls.push('prepare');
+      throw new Error('Unexpected bootstrap');
+    },
+  });
+  assert.equal(code, 1);
+  assert.deepEqual(calls, []);
 });
 
 test('--app-bundle is forwarded to the runtime helper', async () => {

@@ -45,6 +45,8 @@ herdr-zcode --cwd "$HOME/herdr-zcode-demo"
 
 `--runtime tui` explicitly selects the default interactive runtime. Runtime selection is explicit even inside a Herdr pane.
 
+Use `--runtime core` in a herdr-core pane to report state through OSC 7501. In that runtime, `SIGHUP` and `SIGTERM` stop the app-server without waiting for session shutdown RPCs. Add `--non-interactive` to expose startup failures through OSC status.
+
 Type this request into herdr-zcode and press Enter:
 
 ```text

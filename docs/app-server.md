@@ -43,6 +43,7 @@ To install a standalone copy of the checkout:
 | `lib/desktop-account.mjs` | Read the Desktop account, register its catalog overlay, select the model, answer matching authentication requests, and redact credentials. |
 | `lib/desktop-keychain.mjs` | Verify the ZCode signer and read Keychain-backed Desktop credentials on Apple Silicon macOS. |
 | `lib/herdr-reporter.mjs` | Send asynchronous status reports for one wrapper's server socket and pane. |
+| `lib/osc7501-reporter.mjs` | Emit fixed state and block-kind frames for herdr-core. |
 
 ## Startup and protocol
 
@@ -68,15 +69,15 @@ One controller owns the current session and turn, pending interactions, and know
 
 `AppServerController.status()` describes the session and turn with `starting`, `idle`, `working`, `done`, `blocked`, `error`, or `unknown`. A `blocked` status identifies a pending permission or question, or a classified failure. Pending interactions take precedence over active work and the last turn outcome. A new turn clears that outcome. The `tui` runtime projects the snapshot into the existing `controller.state()` and reporter contract. A finished turn, including a failed turn with the session still accepting input, returns the TUI to `idle`.
 
-An explicit RPC rejection retains its terminal failure status while the TUI reports `unknown` during teardown. An ambiguous transport failure reports `unknown` in both views. The current `core` profile bypasses legacy Herdr reporting and exposes a reporter adapter seam for the upcoming OSC 7501 implementation.
+An explicit RPC rejection retains its terminal failure status while the TUI reports `unknown` during teardown. An ambiguous transport failure reports `unknown` in both views.
 
 A newer authoritative permission snapshot removes obsolete snapshot-only registrations. A delayed snapshot must not remove a request observed through a live event or reverse RPC. Missing snapshot fields are not empty lists, and an unanswered bootstrap registration without a response channel must not keep the client blocked.
 
 Redaction spans output chunks, including credentials split across model deltas. Buffer only suffixes that may match a known credential; flush ordinary text on completion or shutdown and add refreshed credentials to the redaction set. Never print raw authentication exchanges, cookies, headers, stacks, or complete provider error objects.
 
-Each wrapper owns one app-server and asynchronous reporter. Herdr reporting requires `HERDR_ENV`, `HERDR_PANE_ID`, `HERDR_BIN_PATH`, and `HERDR_SOCKET_PATH`. Coalesce updates with ordered sequence numbers, short timeouts, and backoff so reporting cannot block model or terminal I/O. Do not run legacy hook reporting alongside it.
+Each wrapper owns one app-server and a reporter selected by `--runtime`. The default `tui` reporter uses `HERDR_ENV`, `HERDR_PANE_ID`, `HERDR_BIN_PATH`, and `HERDR_SOCKET_PATH`. It coalesces updates with ordered sequence numbers, short timeouts, and backoff. The `core` reporter writes OSC 7501 to stdout for herdr-core 0.1.20. Frames carry a fixed state and, when blocked, an allowlisted kind. A ready session emits `idle`, successful work emits `done`, and a failed turn emits `blocked` or `error`. Startup and ambiguous transport states do not emit frames. With `--non-interactive`, Core does report a classified startup failure. Startup auth, quota, and rate-limit blocks remain observable for up to five seconds or until interrupted.
 
-On exit, decline unresolved requests, stop and close the session, await owned-process termination, then release Herdr registration. A timeout is not successful cancellation, and leader-process exit does not prove that descendants have exited.
+On normal exit, decline unresolved requests, stop and close the session, await owned-process termination, then release the reporter. TUI starts an isolated Unix process group. Core keeps the app-server in its pane's process group and session. On `SIGHUP` or `SIGTERM`, Core skips RPC shutdown and terminates the direct app-server with bounded escalation. The outer supervisor owns pane-wide cleanup. A timeout leaves cancellation unconfirmed, and leader-process exit alone does not establish descendant exit.
 
 ## Testing changes
 

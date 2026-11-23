@@ -114,8 +114,10 @@ test('core profile passes structured snapshots to its reporter adapter', () => {
   const snapshot = { state: 'blocked', kind: 'quota' };
   profile.createReporter().report(snapshot);
   assert.deepEqual(snapshots, [snapshot]);
-  const fallback = createRuntimeProfile('core').createReporter();
+  const frames = [];
+  const fallback = createRuntimeProfile('core', { output: { write: frame => frames.push(frame) } }).createReporter();
   fallback.report(snapshot);
+  assert.deepEqual(frames, ['\x1b]7501;state=blocked:kind=quota\x07']);
   fallback.close();
 });
 

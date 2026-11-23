@@ -24,12 +24,17 @@ return {
       : { providerId: 'account:zai-individual-coding-plan', modelId: 'GLM-5.3' };
     return { selection, redact: text => text.replaceAll('header-secret', '[REDACTED]'), config: { revision: 'fixture-account', basedOnZCodeBuiltinRevision: 'zcode-builtin:7:active-path-digest' },
       runtimeHeaders: async () => {
+        if (process.env.TEST_CAPTURE_CHILD_SCOPE === '1') write('[child runtime headers requested]\n');
         await new Promise(resolve => setTimeout(resolve, 10));
         return { headersApplied: true, requestAuth: { apiKey: 'header-secret' } };
       } };
   },
   launch: (...args) => {
     child = spawn(...args);
+    if (process.env.TEST_CAPTURE_CHILD_SCOPE === '1') {
+      write(`[child pid ${child.pid}]\n`);
+      child.once('close', (code, signal) => write(`[child status ${code ?? signal}]\n`));
+    }
     child.once('close', () => write('[child exited]\n'));
     return child;
   },

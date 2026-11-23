@@ -1,6 +1,13 @@
 import readline from 'node:readline';
 import assert from 'node:assert/strict';
 const scenario = process.env.TEST_SCENARIO || 'normal';
+if (scenario === 'hang-cleanup' || scenario === 'hang-bootstrap') process.on('SIGTERM', () => {});
+const turnFailures = {
+  failure: {},
+  quota: { code: 'MODEL_RATE_LIMITED', attribution: { providerErrorCode: '1308', statusCode: 429, reason: 'rate_limited' } },
+  'rate-limit': { code: 'MODEL_RATE_LIMITED', attribution: { providerErrorCode: '1302', statusCode: 429, reason: 'rate_limited' } },
+  'turn-auth': { code: 'MODEL_REQUEST_AUTH_MISSING', attribution: { statusCode: 401, reason: 'auth_failed' } },
+};
 const sessionId = 'session-main';
 let seq = 0, turn = 0, active, waiting = new Map(), closeRequested = false;
 const send = message => process.stdout.write(JSON.stringify(message) + '\n');
@@ -117,9 +124,8 @@ async function runPrompt(p, id) {
     assert.equal(result.requestAuth.apiKey, 'header-secret');
     reply(id, { accepted: true, sessionId });
   }
-  if (scenario === 'failure' || scenario === 'quota') {
-    event('turn.failed', { inputId: p.inputId, error: { code: scenario === 'quota' ? 'MODEL_RATE_LIMITED' : undefined,
-      attribution: scenario === 'quota' ? { providerErrorCode: '1308', statusCode: 429, reason: 'rate_limited' } : undefined,
+  if (Object.hasOwn(turnFailures, scenario)) {
+    event('turn.failed', { inputId: p.inputId, error: { ...turnFailures[scenario],
       message: 'header-secret private provider failure', stack: 'PRIVATE STACK', data: { authorization: 'header-secret' } } });
     active = null; return;
   }
@@ -154,6 +160,11 @@ rl.on('line', line => {
         assert.equal(prefs.askUserQuestionAutoResolutionEnabled, false);
         const auth = await reverse('interaction/requestProviderRuntimeHeaders', {});
         assert.equal(auth.requestAuth.apiKey, 'header-secret');
+        if (scenario === 'startup-auth') {
+          send({ id: m.id, error: { code: -32001, data: { attribution: { statusCode: 401, reason: 'auth_failed' } }, message: 'header-secret auth body' } });
+          return;
+        }
+        if (scenario === 'hang-bootstrap') return;
         reply(m.id, {}); break;
       }
       case 'session/create': case 'session/resume':
@@ -164,11 +175,17 @@ rl.on('line', line => {
           const bootstrap = observedSnapshot(undefined, 1);
           bootstrap.projection.pendingPermissions = [{ requestId: 'expired-bootstrap', toolCallId: 'expired-tool', toolName: 'Write', options: [] }];
           reply(m.id, bootstrap);
-        } else reply(m.id, scenario === 'snapshot-reconciled' ? observedSnapshot('bootstrap-turn', 1) : snapshot());
+        } else if (scenario === 'snapshot-reconciled' || scenario === 'startup-auth-with-provisional-turn') {
+          reply(m.id, observedSnapshot('bootstrap-turn', 1));
+        } else reply(m.id, snapshot());
         break;
       case 'session/setModel':
         assert.equal(p.persistAsWorkspaceLastUsed, false);
         assert.equal(p.model.options.reasoningLevel, process.env.TEST_REASONING || 'max');
+        if (scenario === 'startup-auth-with-provisional-turn') {
+          send({ id: m.id, error: { code: -32001, data: { attribution: { statusCode: 401, reason: 'auth_failed' } } } });
+          break;
+        }
         reply(m.id, snapshot()); break;
       case 'session/setMode': assert.equal(p.mode, 'guarded'); reply(m.id, {}); break;
       case 'session/subscribe':
@@ -193,6 +210,7 @@ rl.on('line', line => {
   })().catch(error => { process.stderr.write('fixture assertion failed: ' + error.message); process.exit(2); });
 });
 rl.on('close', () => {
-  if (scenario === 'hang-cleanup') { process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); return; }
+  if (scenario === 'hang-cleanup' || scenario === 'hang-bootstrap') { setInterval(() => {}, 1000); return; }
+  if (scenario === 'startup-auth') return;
   assert.ok(closeRequested, 'session not closed before stdin EOF');
 });
