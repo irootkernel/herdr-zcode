@@ -26,9 +26,11 @@ The installed `herdr-zcode` checks the same nvm location first. If that executab
 | `./dev node [arguments]` | Invoke pinned Node directly |
 | `./dev npm [arguments]` | Invoke pinned npm directly |
 
-`./dev npm run test:live-account`, `test:live-reporter`, and `test:live-herdr -- --scenario basic` are explicit integration checks. They are never part of setup, doctor, or offline tests. Live account/model checks can consume usage.
+`./dev npm run test:live-account`, `test:live-reporter`, `test:live-herdr -- --scenario basic`, and `test:live-herdr-core` are explicit integration checks. They are never part of setup, doctor, or offline tests. Live account/model checks can consume usage. See the [live Core prerequisites](app-server.md#live-herdr-core-certification) for Desktop authentication, the credential override, and the installed-candidate option.
 
 The `test` and live test scripts check actual Node/npm versions in the command body, including when the user's npm configuration disables lifecycle hooks. `./dev pack` validates npm and enables its local prepack guard. Raw npm with lifecycle hooks disabled can bypass prepack; use the project pack command. The direct JavaScript CLI entry checks Node as well. The installed shell launcher selects its own package's policy, independently of the current directory and `--cwd`.
+
+To smoke-test the installed fallback, use a disposable installation prefix and an empty `HOME`. Run the absolute installed launcher under `env -i HOME=<empty-directory> PATH=/usr/bin:/bin` with `--version`, `--version --json`, and `--help`. These metadata checks need ZCode Desktop and do not open an account session.
 
 ## Explicit upgrades
 

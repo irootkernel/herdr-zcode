@@ -30,7 +30,7 @@ If the declared Node is missing, `setup` prints the exact `nvm install` command;
 
 Installation copies the package to `~/.local`; repeat it after source changes. Previously published archives remain unchanged: the older v0.1.0 asset does not include this toolchain policy. Build a new archive with `./dev pack` and install it with `./dev npm install --global --prefix "$HOME/.local" /absolute/path/to/archive.tgz`.
 
-The installed command uses pinned nvm Node when available and otherwise uses the Node runtime that ships with ZCode Desktop. To select a different bundle, pass `--app-bundle` or set `HERDR_ZCODE_APP_BUNDLE`. `herdr-zcode --version --json` reports supported runtimes and the minimum Desktop version without opening an account session.
+The installed command uses the exact pinned nvm Node when available and otherwise uses the embedded Node runtime that ships with ZCode Desktop. The fallback works with an empty `HOME`, unset `NVM_DIR`, and `PATH=/usr/bin:/bin`. To select a different bundle, pass `--app-bundle` or set `HERDR_ZCODE_APP_BUNDLE`. `herdr-zcode --version --json` reports supported runtimes and the minimum Desktop version without opening an account session.
 
 The `export` command makes herdr-zcode available in this Terminal window. For new windows, you can use its full path, `"$HOME/.local/bin/herdr-zcode"`, or add the same `export` line to your shell's startup file (`~/.zshrc` for the default macOS shell).
 
@@ -47,7 +47,7 @@ herdr-zcode --cwd "$HOME/herdr-zcode-demo"
 
 `--runtime tui` explicitly selects the default interactive runtime. Runtime selection is explicit even inside a Herdr pane.
 
-Use `--runtime core` in a herdr-core pane to report state through OSC 7501. In that runtime, `SIGHUP` and `SIGTERM` stop the app-server without waiting for session shutdown RPCs. Add `--non-interactive` to expose startup failures through OSC status.
+Use `--runtime core` under herdr-core 0.1.20 (`hc`) to report state through OSC 7501. In that runtime, `SIGHUP` and `SIGTERM` stop the app-server without waiting for session shutdown RPCs. Add `--non-interactive` to expose startup failures through OSC status. See the [herdr-core operating guide](HERDR.md#herdr-core-0120).
 
 In an isolated session, use `--auth-file <path>` to provide a projected Z.AI Coding Plan credential. Supply an owner-readable private JSON file. Add `--consume-auth-file` when the wrapper should remove that file before launching the app-server. Use a disposable copy for consumption. See [projected account authentication](docs/app-server.md#projected-account-authentication) for the file format and lifecycle.
 

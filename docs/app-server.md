@@ -117,3 +117,17 @@ Live checks are separate and use real services. Account and Herdr/model checks c
 Other Herdr/model scenarios are `permissions`, `subagent`, `question`, `cancel`, `multiline`, `resume`, and `coding`. Set `HERDR_TEST_BIN` if Herdr is not installed at `~/.local/bin/herdr`. Live drivers create disposable named sessions and test-owned directories; never substitute an existing user session. Remove only test-owned resources.
 
 Distinguish offline simulation, real Herdr reporting, and completed model execution when reporting results. Request acceptance alone is not a completed model turn; provider or quota errors are failures or blockers. See the [Herdr guide](../HERDR.md) for coordinator and evaluator responsibilities.
+
+### Live herdr-core certification
+
+From the source checkout, with authorization for a live Z.AI Coding Plan call, sign in to the Coding Plan in ZCode Desktop and put `hc` 0.1.20 on `PATH`. The harness uses `/Applications/ZCode.app` at the pinned minimum version or newer and explicitly selects the wrapper's default Z.AI Coding Plan model, currently `account:zai-individual-coding-plan/GLM-5.3`.
+
+```sh
+./dev npm run test:live-herdr-core
+```
+
+The harness reads the current Desktop login through the existing account reader and signed Keychain path when needed. Set `HERDR_ZCODE_LIVE_AUTH_FILE` to the absolute path of a private projected credential to use a separate account source. Both sources stay untouched. The harness writes a disposable `0600` projection and verifies that `--consume-auth-file` removed it before prompt delivery. The isolated wrapper and app-server use only the projected account.
+
+Set `HERDR_ZCODE_LIVE_BINARY` to the absolute path of a standalone installed candidate to verify that package. The default is the checkout's launcher.
+
+The harness starts a unique `HC_SESSION` with private `HOME`, XDG directories, and short physical `TMPDIR`, using `PATH=/usr/bin:/bin` and no `NVM_DIR`. It uses an empty working directory and restricts the session to `Read` and `Write` under `--mode yolo`, with MCP, title generation, off-peak tools, and dynamic workflows disabled. It checks reported `idle`, submits one guarded turn that copies a fresh fixture outside the working directory through `--additional-dir`, then verifies reported `done`, `turn >= 1`, and the exact output. It times `hc kill` until both owned PIDs return `ESRCH`, with a strict 150 ms Epic budget and a 200 ms harness ceiling. It stops only its isolated server and removes its temporary files. If server cleanup fails, it removes the credential copy and reports where it kept the private routing files for recovery.

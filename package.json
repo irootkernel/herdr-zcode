@@ -41,6 +41,7 @@
     "test": "node scripts/check-toolchain.mjs && node --test tests/*.test.mjs",
     "test:live-account": "node scripts/check-toolchain.mjs && node tests/live-account.mjs --authorize-live",
     "test:live-herdr": "node scripts/check-toolchain.mjs && node tests/live-herdr-app.mjs --authorize-live",
+    "test:live-herdr-core": "node scripts/check-toolchain.mjs && node tests/live-herdr-core.mjs --authorize-live",
     "test:live-reporter": "node scripts/check-toolchain.mjs && node tests/live-herdr-reporter.mjs --authorize-herdr"
   }
 }

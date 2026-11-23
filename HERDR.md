@@ -99,3 +99,11 @@ Each wrapper owns its app-server, session, interactions, and reporter. Reports a
 Task assignments must state the goal, allowed files, preservation requirements, completion criteria, and validation. Result reports must identify changes, checks actually run, and remaining issues. A completion claim or successful exit code alone does not establish correctness; the evaluator checks the actual changes and evidence.
 
 Each coordinator tracks its executors and file ownership. Separate panes do not isolate changes to the same files; agree on ownership or use separate worktrees. Read result reports and questions first; use a short recent-output view for progress and detailed logs when investigating a problem. Close only helpers whose results have been read and which will not be reused. Preserve shared tabs with active helpers and existing user sessions.
+
+## herdr-core 0.1.20
+
+Start the installed command as an executable with `hc run` and select `--runtime core --non-interactive`. Set the working directory, allowed tools, and additional directories to the task's authorized scope. Use a disposable projected credential with `--auth-file <path> --consume-auth-file` when supplying a Coding Plan account for isolated automation.
+
+Read the assigned terminal with `hc get --json <terminal>`. Wait for `reported: true` and `status.state: idle` before delivering a task. Use `hc send --if idle --wait <terminal> <prompt>` to guard delivery. A completed turn reports `done` and advances the turn counter. Check the result artifacts before accepting the work. A `blocked` or `error` state needs investigation.
+
+Use `hc kill <terminal>` to stop a terminal you own. Core keeps its app-server in the terminal's process group and takes the fast teardown path on hangup or termination. The [live Core test](docs/app-server.md#live-herdr-core-certification) uses its own daemon and checks that both processes are gone.
