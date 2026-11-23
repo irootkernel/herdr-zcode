@@ -1,0 +1,7 @@
+version: 2
+commands:
+  test:
+    command: ["./dev", "test"]
+    tags: [offline, test]
+    parser: node-test
+    timeout_sec: 600
