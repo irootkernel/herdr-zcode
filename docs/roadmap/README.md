@@ -18,10 +18,13 @@ Epic status is independent of child Task status. Completing every member Task do
 | Epic | Status | Goal |
 | --- | --- | --- |
 | [EPIC-001](#epic-001-shared-core-herdr-core-runtime-and-mulgae-integration-support) | Completed | Add explicit `--runtime core` (`herdr-core 0.1.20` OSC 7501 + fast non-detached teardown) alongside default `--runtime tui` over a shared core, make `herdr-zcode` directly executable in isolated/sandboxed environments without `nvm`, and add sandbox auth projection, session tool scoping, non-interactive fail-closed handling, and independent reasoning effort control for Mulgae integration. |
+| [EPIC-002](#epic-002-isolated-zcode-desktop-companion-cli) | Planned | Enable GLM-5.4 with projected credentials and provide host preparation and offline compatibility checks so isolated callers can use ZCode without managing Desktop internals. |
 
 ## Adopted execution order
 
 Execute `EPIC-001` Tasks sequentially in table order (`TASK-001` through `TASK-006`). Each Task after `TASK-001` depends on completion and verification of the preceding Task.
+
+`EPIC-002` builds on the completed `EPIC-001`. Execute `TASK-007`, then `TASK-008`, then `TASK-009`. Each Task after `TASK-007` depends on completion and verification of the preceding Task.
 
 `Planned` records an approved work definition; moving a Task or Epic to `In Progress`, `In Review`, or `Completed` requires implementation and recorded verification evidence. Release, npm packing/installation, commits, pushes, and downstream `mulgae` integration remain separate from individual Task completion.
 
@@ -60,3 +63,26 @@ The [app-server architecture](../app-server.md) and [CLI guide](../../README.md)
 - [x] Sandbox-safe execution (`--auth-file --consume-auth-file`, `--runtime-dir`/`TMPDIR`, `--tool-allowlist`, `--tool-denylist`, `--disable-mcp`, `--disable-title-gen`, `--non-interactive`, `--additional-dir`, `--reasoning-effort`) is verified offline and in live `herdr-core 0.1.20` + `ZCode.app >= 3.18.2` certification (including out-of-`--cwd` scratch `Read` + `Write` under `mode: yolo`).
 - [x] `package.json` `files`, `./dev pack`, and `./dev install` bundle every new module cleanly without breaking `./dev` toolchain pinning.
 - [x] Durable behavior, architecture, CLI contracts, and testing guidance are promoted into `README.md`, `HERDR.md`, `docs/app-server.md`, and `docs/toolchains.md`; `Detailed SOT` is replaced with `Canonical Outcomes`; the temporary dossier and its `docs/todo/README.md` entry are removed upon closeout; and explicit Epic acceptance is granted.
+
+---
+
+## EPIC-002: Isolated ZCode Desktop companion CLI
+
+Status: Planned
+
+Detailed SOT: [Isolated ZCode Desktop companion CLI](../todo/TODO-ISOLATED-ZCODE-DESKTOP-COMPANION-CLI.md).
+
+Goal: support GLM-5.4 with projected credentials and make `herdr-zcode` responsible for Desktop bundle inspection, active catalog selection, and trusted-host credential projection. Mulgae owns the outer sandbox, review workflow, and downstream integration qualification.
+
+| Task | Status | Objective | Verification |
+| --- | --- | --- | --- |
+| TASK-007 | Planned | Add `--catalog-file` to projected `tui` and `core` sessions. Bind the same validated catalog to account/model selection and the app-server, with exact Coding Plan API matching. Fail closed on unverified explicit reasoning in noninteractive Core. | Projected rev `48` selects GLM-5.4; invalid files or catalogs fail before app-server launch with no fallback; omitted model and effort preserve fresh-session defaults; explicit effort is verified before prompt delivery. |
+| TASK-008 | Planned | Add offline `--check-desktop --json`, with structured failures from both shell bootstrap and the JavaScript toolchain guard. Reuse Desktop inspection across entry points. | Installed-launcher tests with empty `HOME` and minimal `PATH` cover compatible, missing, invalid, below-minimum, and invalid embedded-runtime fixtures. The probe performs no account or Keychain access, app-server launch, or network calls. |
+| TASK-009 | Planned | Add trusted-host `prepare-isolated`, advertise the companion CLI, package the `0.2.0` candidate, and extend the live Core harness for the installed GLM-5.4 path. | Verify private projection, catalog and receipt integrity, deadline and cleanup, tarball-to-install provenance and fingerprint coverage, and standalone command smoke tests. |
+
+### Epic acceptance
+
+- [ ] All three Tasks are verified with recorded evidence. The final candidate passes the offline suite, package-content checks, and installed smoke checks.
+- [ ] The offline launch-adapter test observes authentication-file consumption before app-server spawn. The exact installed candidate completes one authorized real GLM-5.4 / `max` turn with ZCode.app `4.0.0` and `hc 0.1.20`. Live evidence includes auth-file absence before prompt delivery, unchanged native Desktop state, and teardown in less than 150 ms with zero surviving owned processes.
+- [ ] The installed candidate's Git SHA, version, package fingerprint, and verification results are recorded for Mulgae `EPIC-019`. Mulgae owns the separate `TASK-095` Seatbelt and BashGate qualification.
+- [ ] Durable outcomes are promoted into the canonical CLI, operations, architecture, and toolchain documents. Explicit Epic acceptance governs the status transition and dossier retirement.
