@@ -9,12 +9,14 @@ import { promisify } from 'node:util';
 import { DEFAULT_MODEL, desktopAccount } from '../lib/desktop-account.mjs';
 import { createKeychainSource } from '../lib/desktop-keychain.mjs';
 import { desktopCatalogCachePath } from '../lib/desktop-runtime.mjs';
+import { readToolchains } from '../lib/toolchain.mjs';
 
 const exec = promisify(execFile);
 const workingPath = '/usr/bin:/bin';
 const statOptions = { bigint: true };
 const killBudget = 200;
 const epicKillBudget = 150;
+const killObservationLimit = 1000;
 const installedModel = 'account:zai-individual-coding-plan/GLM-5.4';
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -147,14 +149,22 @@ async function prepareInstalledInputs(binary, root, bundle, auth, version, optio
     } catch { throw new CheckFailure('Installed companion CLI did not return a successful JSON result'); }
   };
   const metadata = await execInstalled(['--version', '--json']);
-  check(metadata.version === '0.2.0' && ['catalogFile', 'prepareIsolated', 'checkDesktop'].every(name => metadata.capabilities?.includes(name)),
+  check(metadata.version === '0.2.0' && Array.isArray(metadata.capabilities) &&
+    ['core', 'osc7501', 'catalogFile', 'prepareIsolated', 'checkDesktop'].every(name => metadata.capabilities.includes(name)),
     'Installed companion CLI does not advertise the expected 0.2.0 capabilities');
   const before = await desktopDigests(home, version);
   const receipt = await execInstalled(['prepare-isolated', '--out-dir', root, '--app-bundle', bundle]);
   const catalog = join(root, 'catalog.json');
+  const [authInfo, catalogInfo] = await Promise.all([lstat(auth), lstat(catalog)]);
   check(receipt.authFile === auth && receipt.catalogFile === catalog && receipt.appVersion === version &&
+    receipt.minZcodeAppVersion === readToolchains().ZCODE_APP_MIN_VERSION &&
+    receipt.providerId === 'account:zai-individual-coding-plan' &&
+    typeof receipt.accountIdentitySHA256 === 'string' && /^[0-9a-f]{64}$/.test(receipt.accountIdentitySHA256) &&
     ['desktop-cache', 'bundled'].includes(receipt.catalogSource) && Number.isSafeInteger(receipt.catalogRevision) &&
-    receipt.catalogSHA256 === sha256(await readFile(catalog)), 'Prepared receipt does not describe the owned input files');
+    receipt.catalogRevision > 0 && receipt.catalogSHA256 === sha256(await readFile(catalog)),
+    'Prepared receipt does not describe the owned input files');
+  check(authInfo.isFile() && (authInfo.mode & 0o7777) === 0o600 &&
+    catalogInfo.isFile() && (catalogInfo.mode & 0o7777) === 0o400, 'Prepared inputs do not have the required private modes');
   const publicReceipt = { catalogSource: receipt.catalogSource, catalogRevision: receipt.catalogRevision,
     catalogSHA256: receipt.catalogSHA256, appVersion: receipt.appVersion, minZcodeAppVersion: receipt.minZcodeAppVersion };
   return { before, home, catalog, publicReceipt };
@@ -194,23 +204,27 @@ function gone(pid) {
   }
 }
 
-async function killAndMeasure(hcCommand, address, pids) {
-  check(pids.every(pid => !gone(pid)), 'Both owned processes must be alive before the teardown check');
+async function killAndMeasure(hcCommand, address, wrapperPid, appServerPid) {
+  const pids = { wrapper: wrapperPid, appServer: appServerPid };
+  check(Object.values(pids).every(pid => !gone(pid)), 'Both owned processes must be alive before the teardown check');
   const started = performance.now();
   const result = hcCommand(['kill', '--json', address], 'hc kill failed', { cleanup: true, timeout: 10000 })
     .then(() => true, () => false);
-  let elapsed = null;
-  while (performance.now() - started < killBudget) {
-    if (pids.every(gone)) {
-      elapsed = performance.now() - started;
-      break;
+  const firstEsrchMs = { wrapper: null, appServer: null };
+  while (performance.now() - started < killObservationLimit) {
+    for (const [name, pid] of Object.entries(pids)) {
+      if (firstEsrchMs[name] === null && gone(pid)) firstEsrchMs[name] = performance.now() - started;
     }
+    if (Object.values(firstEsrchMs).every(value => value !== null)) break;
     await pause(1);
   }
-  check(await result, 'hc kill failed');
-  check(elapsed !== null && elapsed < killBudget, `hc kill did not reach ESRCH for both owned processes within ${killBudget} ms`);
-  check(elapsed < epicKillBudget, `Both owned processes reached ESRCH after ${elapsed.toFixed(1)} ms, outside the ${epicKillBudget} ms Epic budget`);
-  return elapsed;
+  const timing = JSON.stringify(firstEsrchMs);
+  check(await result, `hc kill failed. First ESRCH in ms ${timing}`);
+  check(Object.values(firstEsrchMs).every(value => value !== null && value < killBudget),
+    `Both owned processes must reach ESRCH within ${killBudget} ms. First ESRCH in ms ${timing}`);
+  const elapsed = Math.max(...Object.values(firstEsrchMs));
+  check(elapsed < epicKillBudget, `Both owned processes must reach ESRCH within ${epicKillBudget} ms. First ESRCH in ms ${timing}`);
+  return { elapsed, firstEsrchMs };
 }
 
 async function run(signal) {
@@ -342,7 +356,7 @@ async function run(signal) {
 
     check(await appServerPid(ready.pid, executable, options) === childPid,
       'The owned app-server PID changed during the turn');
-    const elapsed = await killAndMeasure(hcCommand, address, [ready.pid, childPid]);
+    const { elapsed, firstEsrchMs } = await killAndMeasure(hcCommand, address, ready.pid, childPid);
     killed = true;
     if (installed) {
       const after = await desktopDigests(prepared.home, appVersion.trim());
@@ -353,7 +367,8 @@ async function run(signal) {
       hc: '0.1.20', desktop: appVersion.trim(), reported: done.reported, ready: 'idle', completed: 'done', turn: done.turn,
       authSource: installed ? 'prepare-isolated' : authSource === undefined ? 'desktop' : 'explicit-file',
       projectedAuthConsumedBeforePrompt: true, exactScopedResult: true, wrapperPid: ready.pid, appServerPid: childPid,
-      bothPidsESRCH: true, observedTeardownMs: elapsed, epicTeardownBudgetMs: epicKillBudget, taskTeardownBudgetMs: killBudget,
+      bothPidsESRCH: true, observedTeardownMs: elapsed, firstEsrchMs,
+      epicTeardownBudgetMs: epicKillBudget, taskTeardownBudgetMs: killBudget,
       ...(installed ? { scenario: 'installed-candidate', model: installedModel, reasoning: 'max', desktopStateUnchanged: true,
         receipt: prepared.publicReceipt } : {}),
     };
