@@ -171,6 +171,26 @@ test('installed Desktop check treats a literal 0 bundle environment path as a pa
   });
 });
 
+test('installed Desktop check reports safe metadata when its bootstrap helper is missing', async t => {
+  const f = await installFixture(t);
+  const d = await bundleFixture(f.root, 'ZCode "quoted" \\ unicode-한글\n.app');
+  const old = await bundleFixture(f.root, 'Below the floor.app', { app: '0.0.1' });
+  const invalid = await bundleFixture(f.root, 'Invalid build.app', { build: '<integer>19</integer>' });
+  const missing = join(f.root, 'Absent.app');
+  await rm(join(f.packageDir, 'scripts/desktop-bootstrap.pl'));
+  await failure(f, args(d.bundle), 'embedded_runtime_invalid', d.bundle, '4.0.0', {
+    env: { ...f.env, HOME: '', HERDR_ZCODE_APP_BUNDLE: '/missing-decoy.app' },
+  });
+  await failure(f, ['--check-desktop', '--app-bundle', d.bundle], 'invalid_arguments', d.bundle, '4.0.0');
+  await failure(f, args(missing), 'app_bundle_missing', missing, null);
+  await failure(f, args(invalid.bundle), 'app_bundle_invalid', invalid.bundle, '4.0.0');
+  await failure(f, args(old.bundle), 'app_version_below_minimum', old.bundle, '0.0.1');
+  for (const fixture of [d, old, invalid]) {
+    await assert.rejects(access(fixture.probeMarker), { code: 'ENOENT' });
+    await assert.rejects(access(fixture.marker), { code: 'ENOENT' });
+  }
+});
+
 test('installed Desktop check handles unavailable, below-floor and noisy embedded runtimes', async t => {
   const f = await installFixture(t);
   const unlaunchable = await bundleFixture(f.root, 'Unlaunchable ZCode.app');

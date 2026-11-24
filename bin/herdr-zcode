@@ -37,13 +37,107 @@ if [ "${1:-}" = prepare-isolated ]; then
   }
   run_preparation_bootstrap "$@" 2>/dev/null 3< "$bootstrap" || prepare_bootstrap_failed
 fi
-resolve_package_root
 for arg do
   if [ "$arg" = --check-desktop ]; then
     unset PERL5OPT PERL5LIB PERLLIB PERL_UNICODE PERL5DB PERL5DB_CMD PERL_USE_UNSAFE_INC
-    exec /usr/bin/perl "$root/scripts/desktop-bootstrap.pl" "$root" '' "$@"
+    run_desktop_bootstrap() {
+      shopt -s execfail && command exec /usr/bin/perl /dev/fd/3 "$root" '' "$@"
+    }
+    root=
+    if resolve_package_root 2>/dev/null; then
+      bootstrap=$root/scripts/desktop-bootstrap.pl
+      if [ -f "$bootstrap" ] && [ -s "$bootstrap" ] && [ -r "$bootstrap" ]; then
+        run_desktop_bootstrap "$@" 2>/dev/null 3< "$bootstrap" || :
+      fi
+    fi
+    # The bundled helper may be unavailable. Report metadata the system can
+    # still read, without trying to start the embedded runtime.
+    exec /usr/bin/perl - "$root" "$@" 2>/dev/null <<'PERL'
+use strict;
+use Cwd qw(getcwd);
+use Encode qw(decode);
+use Errno qw(ENOENT);
+use JSON::PP qw(encode_json);
+my ($root, @args) = @ARGV;
+my $bundle = $ENV{HERDR_ZCODE_APP_BUNDLE} // '';
+$bundle = '/Applications/ZCode.app' unless length $bundle;
+my ($check, $json, $bundle_arg, $invalid) = (0, 0, 0, 0);
+for (my $i = 0; $i < @args; $i++) {
+    my $arg = $args[$i];
+    if ($arg eq '--check-desktop' && !$check) { $check = 1; }
+    elsif ($arg eq '--json' && !$json) { $json = 1; }
+    elsif ($arg eq '--app-bundle' && defined $args[$i + 1] && $args[$i + 1] ne '' && $args[$i + 1] !~ /\A--/) {
+        $bundle = $args[++$i];
+        $invalid ||= $bundle_arg;
+        $bundle_arg = 1;
+    } else { $invalid = 1; }
+}
+$bundle = getcwd() . '/' . $bundle unless $bundle =~ m{\A/};
+my @parts;
+for my $part (split '/', $bundle) {
+    next if $part eq '' || $part eq '.';
+    if ($part eq '..') { pop @parts; } else { push @parts, $part; }
+}
+$bundle = '/' . join('/', @parts);
+my @pins;
+if ($root ne '' && open(my $pins, '<', "$root/toolchains.env")) {
+    @pins = map { chomp; substr($_, length('ZCODE_APP_MIN_VERSION=')) } grep { /\AZCODE_APP_MIN_VERSION=/ } <$pins>;
+}
+my $minimum = @pins == 1 && $pins[0] =~ /\A[0-9]+\.[0-9]+\.[0-9]+\z/ ? $pins[0] : undef;
+sub plist_string {
+    my ($field) = @_;
+    my $path = "$bundle/Contents/Info.plist";
+    return unless -f $path && open(my $plist, '-|', '/usr/bin/plutil', '-extract', $field, 'raw', '-expect', 'string', '-o', '-', $path);
+    my $count = read($plist, my $value, 65537);
+    return unless close($plist) && defined $count && $count <= 65536;
+    $value =~ s/\A\s+|\s+\z//g;
+    return $value;
+}
+sub version_below {
+    my ($app, $minimum) = @_;
+    my @actual = split /\./, $app;
+    my @required = split /\./, $minimum;
+    for my $i (0 .. 2) {
+        for ($actual[$i], $required[$i]) { s/\A0+(?=\d)//; }
+        my $order = (length($actual[$i]) <=> length($required[$i])) || ($actual[$i] cmp $required[$i]);
+        return $order < 0 if $order;
+    }
+    return 0;
+}
+my $app = plist_string('CFBundleShortVersionString');
+$app = undef if defined $app && $app !~ /\A[0-9]+\.[0-9]+\.[0-9]+\z/;
+my $reason = 'embedded_runtime_invalid';
+if ($invalid || !$check || !$json) {
+    $reason = 'invalid_arguments';
+} elsif (!stat $bundle) {
+    $reason = $! == ENOENT ? 'app_bundle_missing' : 'app_bundle_invalid';
+} else {
+    my $build = plist_string('CFBundleVersion');
+    my $executable = "$bundle/Contents/MacOS/ZCode";
+    my $launcher = "$bundle/Contents/Resources/glm/zcode.cjs";
+    my $catalog = "$bundle/Contents/Resources/config/provider/zcode-builtin.json";
+    if (!(-d $bundle && defined $app && defined $build && length $build && -f $executable && -x _ && -s _ &&
+            -f $launcher && -r _ && -s _ && -f $catalog && -r _ && -s _ && -s _ <= 4 * 1024 * 1024)) {
+        $reason = 'app_bundle_invalid';
+    } elsif (defined $minimum && version_below($app, $minimum)) {
+        $reason = 'app_version_below_minimum';
+    }
+}
+my %messages = (
+    invalid_arguments => 'Use --check-desktop --json with an optional --app-bundle path.',
+    app_bundle_missing => 'ZCode Desktop bundle is missing.',
+    app_bundle_invalid => 'ZCode Desktop bundle has missing or invalid required metadata or files.',
+    app_version_below_minimum => 'ZCode Desktop version is below the required minimum.',
+    embedded_runtime_invalid => 'ZCode Desktop embedded runtime is unavailable or incompatible.',
+);
+print encode_json({ compatible => JSON::PP::false, reason => $reason, message => $messages{$reason},
+    appVersion => $app, minZcodeAppVersion => $minimum,
+    appBundle => decode('UTF-8', $bundle) }), "\n";
+exit 1;
+PERL
   fi
 done
+resolve_package_root
 fail() { printf 'herdr-zcode: %s\n' "$*" >&2; exit 1; }
 [ -f "$root/toolchains.env" ] || fail 'Missing toolchains.env'
 pinned_node_version=
