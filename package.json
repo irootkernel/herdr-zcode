@@ -11,6 +11,7 @@
   "files": [
     "bin/herdr-zcode",
     "scripts/toolchain.sh",
+    "scripts/desktop-bootstrap.pl",
     "scripts/dev.mjs",
     "scripts/check-toolchain.mjs",
     "scripts/tool-bin/npm",

@@ -41,6 +41,7 @@ To install a standalone copy of the checkout:
 | `lib/runtime-profile.mjs` | Select the explicit CLI runtime and adapt canonical status to the legacy Herdr reporter. |
 | `lib/desktop-runtime.mjs` | Resolve the installed Electron runtime, prepare a temporary public provider catalog, and isolate the child environment. |
 | `lib/desktop-catalog.mjs` | Validate explicit provider catalog files and compare their Coding Plan API rules with the trusted bundle. |
+| `lib/toolchain.mjs` | Enforce toolchain pins and inspect the Desktop bundle and embedded runtime for doctor and standalone diagnostics. |
 | `lib/desktop-account.mjs` | Load Desktop or projected credentials and share the account overlay, model validation, authentication responses, and stream redaction. |
 | `lib/desktop-keychain.mjs` | Verify the ZCode signer and read Keychain-backed Desktop credentials on Apple Silicon macOS. |
 | `lib/herdr-reporter.mjs` | Send asynchronous status reports for one wrapper's server socket and pane. |

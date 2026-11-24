@@ -67,6 +67,18 @@ test('Desktop minimum gates startup and newer builds keep their reported runtime
   const f = await fixture(t);
   const bundle = join(f.root, 'ZCode.app'); await mkdir(join(bundle, 'Contents/MacOS'), { recursive: true });
   const executable = join(bundle, 'Contents/MacOS/ZCode');
+  const launcher = join(bundle, 'Contents/Resources/glm/zcode.cjs');
+  const catalog = join(bundle, 'Contents/Resources/config/provider/zcode-builtin.json');
+  await mkdir(dirname(launcher), { recursive: true });
+  await mkdir(dirname(catalog), { recursive: true });
+  await writeFile(executable, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  await writeFile(launcher, '// Offline fixture');
+  await writeFile(catalog, JSON.stringify({ schemaVersion: 1, revision: 1, config: { modelConfigRules: {},
+    providerConfigRules: { providerRules: [{ providerId: 'account:zai-individual-coding-plan', config: {
+      access: { type: 'zhipu-account', accountType: 'zai', mode: 'individual-coding-plan' },
+      api: { type: 'anthropic', baseUrl: 'https://fixture.invalid/api' }, builtinModelIds: ['GLM-5.3'],
+    } }] },
+  } }));
   const { ZCODE_APP_MIN_VERSION: minimum } = readToolchains();
   const [major, minor, patch] = minimum.split('.').map(BigInt);
   const writeVersion = (app, build) => writeFile(join(bundle, 'Contents/Info.plist'),
@@ -89,6 +101,15 @@ test('Desktop minimum gates startup and newer builds keep their reported runtime
     await writeFile(executable, '#!/bin/sh\ncat <<\'JSON\'\n' + JSON.stringify({ node, electron, execPath: executable }) + '\nJSON\n', { mode: 0o755 });
     const observed = await inspectDesktop(bundle);
     assert.deepEqual([observed.minimum, observed.app, observed.build, observed.node, observed.electron], [minimum, app, build, node, electron]);
+  }
+  await writeVersion(minimum, 'legacy-build');
+  for (const node of ['19.0.0', 'legacy-node-version']) {
+    const probe = JSON.stringify({ node, electron: 'legacy-electron-version', execPath: executable });
+    await writeFile(executable, '#!/bin/sh\ncat <<\'JSON\'\n' + probe + '\nJSON\n');
+    const runtime = await prepareDesktopRuntime({ appBundle: bundle, copyCatalog: false });
+    try { assert.equal(runtime.executable, await realpath(executable)); }
+    finally { await runtime.close(); }
+    await assert.rejects(inspectDesktop(bundle), { reason: 'embedded_runtime_invalid' });
   }
 });
 

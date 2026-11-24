@@ -9,10 +9,7 @@ import { desktopAccount, projectedAccount } from '../lib/desktop-account.mjs';
 import { appServerEnvironment, prepareDesktopRuntime } from '../lib/desktop-runtime.mjs';
 import { classifyFailure } from '../lib/error-classification.mjs';
 import { createRuntimeProfile, RUNTIMES } from '../lib/runtime-profile.mjs';
-import { assertNode, readToolchains } from '../lib/toolchain.mjs';
-
-try { assertNode({ allowEmbeddedElectron: true }); }
-catch (error) { console.error('herdr-zcode: ' + error.message); process.exit(1); }
+import { assertNode, desktopAppVersion, DesktopInspectionError, inspectDesktop, inspectDesktopMetadata, readToolchains } from '../lib/toolchain.mjs';
 
 const CREATE_SWITCHES = {
   '--disable-mcp': ['mcpServers', []],
@@ -28,6 +25,54 @@ function requestedReasoning(current, next) {
   if (!level) throw new Error('Reasoning effort must be non-empty');
   if (current && current !== level) throw new Error('Conflicting reasoning effort values');
   return level;
+}
+
+function desktopCheckOptions(argv, env) {
+  let bundle = env.HERDR_ZCODE_APP_BUNDLE || '/Applications/ZCode.app';
+  let invalid = false, hasBundle = false, check = false, json = false;
+  for (let index = 0; index < argv.length; index++) {
+    const flag = argv[index];
+    if (flag === '--check-desktop' && !check) check = true;
+    else if (flag === '--json' && !json) json = true;
+    else if (flag === '--app-bundle' && argv[index + 1] && !argv[index + 1].startsWith('--')) {
+      bundle = argv[++index];
+      invalid ||= hasBundle;
+      hasBundle = true;
+    } else invalid = true;
+  }
+  return { bundle: resolve(bundle), valid: !invalid && check && json };
+}
+
+async function checkDesktop(argv, env, output) {
+  const { bundle, valid } = desktopCheckOptions(argv, env);
+  let versions;
+  const failure = error => {
+    output.write(JSON.stringify(error.toCheckResult()) + '\n');
+    return 1;
+  };
+  try { versions = readToolchains(); } catch { /* A damaged installation has no verified minimum. */ }
+  if (!valid || !versions) {
+    return failure(new DesktopInspectionError(valid ? 'embedded_runtime_invalid' : 'invalid_arguments', {
+      bundle, minimum: versions?.ZCODE_APP_MIN_VERSION, app: await desktopAppVersion(bundle),
+    }));
+  }
+  try {
+    let runtimeAvailable = true;
+    try { assertNode({ allowEmbeddedElectron: true }); }
+    catch { runtimeAvailable = false; }
+    if (!runtimeAvailable) {
+      const metadata = await inspectDesktopMetadata(bundle, versions);
+      return failure(new DesktopInspectionError('embedded_runtime_invalid', metadata));
+    }
+    const desktop = await inspectDesktop(bundle, versions, { env });
+    output.write(JSON.stringify({ compatible: true, appVersion: desktop.app, build: desktop.build,
+      minZcodeAppVersion: desktop.minimum, appBundle: desktop.bundle, nodeVersion: desktop.node,
+      electronVersion: desktop.electron }) + '\n');
+    return 0;
+  } catch (error) {
+    if (error instanceof DesktopInspectionError) return failure(error);
+    return failure(new DesktopInspectionError('embedded_runtime_invalid', { bundle, minimum: versions.ZCODE_APP_MIN_VERSION }));
+  }
 }
 
 export function parseArgs(argv) {
@@ -123,6 +168,9 @@ function checkReasoning(result, effort, { modelOnly = false, requireModelLevel =
 // a child fake server without reading credentials or starting Electron/Herdr.
 export async function main({ argv = process.argv.slice(2), env = process.env,
   input = process.stdin, output = process.stdout, errorOutput = process.stderr } = {}, adapters = {}) {
+  if (argv.includes('--check-desktop')) return checkDesktop(argv, env, output);
+  try { assertNode({ allowEmbeddedElectron: true }); }
+  catch (error) { errorOutput.write('herdr-zcode: ' + error.message + '\n'); return 1; }
   let redactor = { write: text => text, flush: () => '' };
   const write = text => { const safe = redactor.write(text); if (safe) output.write(safe); };
   const flushOutput = options => { const safe = redactor.flush(options); if (safe) output.write(safe); };
@@ -145,6 +193,7 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
 [--disable-offpeak] [--disable-dynamic-workflow] [--additional-dir <path>] [--persistence <immediate|deferred>]
 [--prompt-file <path>] [--app-bundle <path>] [--auth-file <path> [--consume-auth-file] [--catalog-file <path>]]
 [--runtime-dir <path>] [--no-copy-catalog] [--skip-desktop-inspect] [--version [--json]] [--bridge-help]
+herdr-zcode --check-desktop --json [--app-bundle <path>]
 The default runtime is tui. Noninteractive input treats slash lines as prompts and blocks on unexpected interaction by default.
 Modes use native ZCode semantics: plan, build (default), edit, guarded, yolo, auto. Only explicit --mode changes the default.
 A $level suffix on --model, such as GLM-5.3$high, overrides the model's advertised default reasoning level.

@@ -138,6 +138,8 @@ Herdr 0.9.5 requires pane commands to send input to custom agents. See the [Herd
 
 ## Troubleshooting
 
+Run `herdr-zcode --check-desktop --json [--app-bundle <path>]` to check the Desktop bundle offline. The command returns one JSON object and exits `0` for a compatible bundle or `1` with a failure reason. It works with an empty `HOME` and `PATH=/usr/bin:/bin` and performs no account access or model calls.
+
 | Problem | What to check |
 | --- | --- |
 | A pinned tool is missing or mismatched | Run `./dev setup` and `./dev doctor` from the source checkout. Follow the exact Node installation instruction when needed. |

@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { main, parseArgs } from '../bin/herdr-zcode-app.mjs';
 import { desktopAccount, projectedAccount, DEFAULT_MODEL } from '../lib/desktop-account.mjs';
-import { codingPlanRule, compatibleCodingPlanRule, readExplicitCatalog } from '../lib/desktop-catalog.mjs';
+import { codingPlanRule, compatibleCodingPlanRule, readBundledCatalog, readExplicitCatalog } from '../lib/desktop-catalog.mjs';
 import { prepareDesktopRuntime } from '../lib/desktop-runtime.mjs';
 import { keychainCipherScript, OS_CREDENTIAL_PREFIX } from '../lib/desktop-keychain.mjs';
 import { readToolchains } from '../lib/toolchain.mjs';
@@ -662,6 +662,49 @@ test('shared Coding Plan rule validation safely rejects missing catalog shape an
   assert.throws(() => compatibleCodingPlanRule(catalog, undefined, providerId), rejected);
   catalog.config.providerConfigRules.providerRules[0].config.api.baseUrl = 'http://fixture.invalid/coding/plan';
   assert.throws(() => codingPlanRule(catalog, providerId), rejected);
+});
+
+test('bundled catalog reads a bounded stable regular file while preserving package symlinks', async t => {
+  const f = await fixture(t);
+  const path = join(f.root, 'bundled-catalog.json');
+  const linkPath = join(f.root, 'bundled-link.json');
+  const payload = JSON.stringify(explicitFixture(44));
+  const rejected = { code: 'catalog_invalid' };
+  await writeFile(path, payload, { mode: 0o444 });
+  await symlink(path, linkPath);
+  assert.deepEqual(await readBundledCatalog(linkPath), explicitFixture(44));
+  await chmod(path, 0o644);
+  await writeFile(path, Buffer.alloc(4 * 1024 * 1024 + 1));
+  await assert.rejects(readBundledCatalog(path), rejected);
+  await writeFile(path, payload);
+
+  const realOpen = fs.open;
+  for (const change of ['metadata', 'length', 'fifo']) {
+    let openFlags;
+    const raced = t.mock.method(fs, 'open', async (target, flags, ...options) => {
+      if (target !== path) return realOpen(target, flags, ...options);
+      openFlags = flags;
+      if (change === 'fifo') {
+        await fs.rename(path, join(f.root, 'bundled-original.json'));
+        assert.equal(spawnSync('/usr/bin/mkfifo', [path]).status, 0);
+      }
+      // Always make a simulated FIFO substitution bounded even if the caller drops O_NONBLOCK.
+      const descriptor = await realOpen(target, flags | constants.O_NONBLOCK, ...options);
+      const read = descriptor.read.bind(descriptor);
+      descriptor.read = async (...args) => {
+        if (change === 'length') return { bytesRead: 0 };
+        const result = await read(...args);
+        if (change === 'metadata') await chmod(path, 0o400);
+        return result;
+      };
+      return descriptor;
+    });
+    syncBuiltinESMExports();
+    try { await assert.rejects(readBundledCatalog(path), rejected); }
+    finally { raced.mock.restore(); syncBuiltinESMExports(); }
+    assert.equal(openFlags, constants.O_RDONLY | constants.O_NONBLOCK);
+    if (change === 'metadata') await chmod(path, 0o644);
+  }
 });
 
 test('projected account reuses the parsed catalog without reopening its effective path', async t => {

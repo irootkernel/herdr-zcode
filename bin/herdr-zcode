@@ -7,6 +7,12 @@ while [ -L "$entry" ]; do
   case "$target" in /*) entry=$target ;; *) entry=$base/$target ;; esac
 done
 root=$(CDPATH= cd -- "$(dirname -- "$entry")/.." && pwd -P)
+for arg do
+  if [ "$arg" = --check-desktop ]; then
+    unset PERL5OPT PERL5LIB PERLLIB PERL_UNICODE PERL5DB PERL5DB_CMD PERL_USE_UNSAFE_INC
+    exec /usr/bin/perl "$root/scripts/desktop-bootstrap.pl" "$root" "$@"
+  fi
+done
 fail() { printf 'herdr-zcode: %s\n' "$*" >&2; exit 1; }
 [ -f "$root/toolchains.env" ] || fail 'Missing toolchains.env'
 pinned_node_version=
