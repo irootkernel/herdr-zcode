@@ -51,7 +51,8 @@ test('standalone symlinks fall back to the selected embedded Node with scrubbed 
   assert.equal(version.stdout, `herdr-zcode ${metadata.version}\n`);
   const json = await exec(link, ['--version', '--json'], { env, cwd: root });
   assert.deepEqual(JSON.parse(json.stdout), { name: 'herdr-zcode', version: metadata.version,
-    runtimes: ['tui', 'core'], osc7501: true, minZcodeAppVersion: readToolchains().ZCODE_APP_MIN_VERSION });
+    runtimes: ['tui', 'core'], osc7501: true, minZcodeAppVersion: readToolchains().ZCODE_APP_MIN_VERSION,
+    capabilities: ['core', 'osc7501', 'catalogFile', 'prepareIsolated', 'checkDesktop'] });
   const { HOME, ...withoutHome } = env;
   const help = await exec(link, ['--help'], { env: withoutHome, cwd: root });
   assert.match(help.stdout, /--runtime-dir.*--skip-desktop-inspect/);

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { access, lstat, mkdir, mkdtemp, open, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { delimiter, join, resolve } from 'node:path';
@@ -8,12 +8,15 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { DEFAULT_MODEL, desktopAccount } from '../lib/desktop-account.mjs';
 import { createKeychainSource } from '../lib/desktop-keychain.mjs';
+import { desktopCatalogCachePath } from '../lib/desktop-runtime.mjs';
 
 const exec = promisify(execFile);
 const workingPath = '/usr/bin:/bin';
 const statOptions = { bigint: true };
 const killBudget = 200;
 const epicKillBudget = 150;
+const installedModel = 'account:zai-individual-coding-plan/GLM-5.4';
+const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
 class CheckFailure extends Error {}
 
@@ -103,6 +106,60 @@ async function absent(path) {
   }
 }
 
+async function desktopDigests(home, version) {
+  const paths = ['setting.json', 'credentials.json'].map(name => join(home, '.zcode/v2', name));
+  paths.push(desktopCatalogCachePath(home, version));
+  return Promise.all(paths.map(async path => {
+    try { return sha256(await readFile(path)); }
+    catch (error) {
+      if (error.code === 'ENOENT') return null;
+      throw new CheckFailure('Could not fingerprint native Desktop state');
+    }
+  }));
+}
+
+async function wipeRemainingAuth(path) {
+  let handle;
+  try { handle = await open(path, constants.O_WRONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch (error) { if (error.code === 'ENOENT') return; throw new CheckFailure('Could not open remaining projected auth for cleanup'); }
+  try {
+    const info = await handle.stat();
+    check(info.isFile() && info.uid === process.getuid() && info.nlink === 1 && info.size <= 65536, 'Remaining auth file could not be safely wiped');
+    const zeros = Buffer.alloc(info.size);
+    let offset = 0;
+    while (offset < zeros.length) {
+      const { bytesWritten } = await handle.write(zeros, offset, zeros.length - offset, offset);
+      check(bytesWritten > 0, 'Could not wipe remaining projected auth');
+      offset += bytesWritten;
+    }
+    await handle.sync();
+  } finally { await handle.close(); }
+}
+
+async function prepareInstalledInputs(binary, root, bundle, auth, version, options) {
+  const home = process.env.HOME;
+  check(home && home.startsWith('/'), 'Installed certification requires the absolute trusted host HOME');
+  const env = { HOME: home, PATH: workingPath, TMPDIR: '/tmp' };
+  const execInstalled = async args => {
+    try {
+      const { stdout } = await exec(binary, args, { cwd: '/private/var/empty', env, signal: options.signal, timeout: 15000 });
+      return JSON.parse(stdout);
+    } catch { throw new CheckFailure('Installed companion CLI did not return a successful JSON result'); }
+  };
+  const metadata = await execInstalled(['--version', '--json']);
+  check(metadata.version === '0.2.0' && ['catalogFile', 'prepareIsolated', 'checkDesktop'].every(name => metadata.capabilities?.includes(name)),
+    'Installed companion CLI does not advertise the expected 0.2.0 capabilities');
+  const before = await desktopDigests(home, version);
+  const receipt = await execInstalled(['prepare-isolated', '--out-dir', root, '--app-bundle', bundle]);
+  const catalog = join(root, 'catalog.json');
+  check(receipt.authFile === auth && receipt.catalogFile === catalog && receipt.appVersion === version &&
+    ['desktop-cache', 'bundled'].includes(receipt.catalogSource) && Number.isSafeInteger(receipt.catalogRevision) &&
+    receipt.catalogSHA256 === sha256(await readFile(catalog)), 'Prepared receipt does not describe the owned input files');
+  const publicReceipt = { catalogSource: receipt.catalogSource, catalogRevision: receipt.catalogRevision,
+    catalogSHA256: receipt.catalogSHA256, appVersion: receipt.appVersion, minZcodeAppVersion: receipt.minZcodeAppVersion };
+  return { before, home, catalog, publicReceipt };
+}
+
 async function appServerPid(parent, app, options) {
   const { stdout } = await exec('/usr/bin/pgrep', ['-P', String(parent)], options).catch(error => {
     if (error.code !== 1 || error.killed || error.signal) throw error;
@@ -157,14 +214,20 @@ async function killAndMeasure(hcCommand, address, pids) {
 }
 
 async function run(signal) {
-  check(process.argv.length === 3 && process.argv[2] === '--authorize-live',
-    'Pass --authorize-live to run the real herdr-core and Z.AI test');
+  const args = process.argv.slice(2);
+  const installed = args.length === 3 && args[1] === '--scenario' && args[2] === 'installed-candidate';
+  check(args[0] === '--authorize-live' && (args.length === 1 || installed),
+    'Pass --authorize-live, optionally with --scenario installed-candidate, to run the real herdr-core and Z.AI test');
   const authSource = process.env.HERDR_ZCODE_LIVE_AUTH_FILE;
   check(process.platform === 'darwin', 'The live herdr-core test requires macOS and ZCode Desktop');
-  const binary = process.env.HERDR_ZCODE_LIVE_BINARY ?
-    resolve(process.env.HERDR_ZCODE_LIVE_BINARY) : fileURLToPath(new URL('../bin/herdr-zcode', import.meta.url));
+  const checkoutBinary = fileURLToPath(new URL('../bin/herdr-zcode', import.meta.url));
+  const binary = process.env.HERDR_ZCODE_LIVE_BINARY ? resolve(process.env.HERDR_ZCODE_LIVE_BINARY) : checkoutBinary;
   const hc = await findHc();
   await access(binary, constants.X_OK);
+  if (installed) {
+    check(authSource === undefined && await realpath(binary) !== await realpath(checkoutBinary),
+      'Installed certification requires HERDR_ZCODE_LIVE_BINARY to select the installed package and uses native host preparation');
+  }
   process.umask(0o077);
   const root = await mkdtemp(join(await realpath('/tmp'), 'hz6.'));
   const cwd = join(root, 'cwd');
@@ -193,11 +256,12 @@ async function run(signal) {
   let address;
   let killed = false;
   let result;
+  let prepared;
   try {
     await Promise.all([cwd, env.HOME, env.XDG_CONFIG_HOME, env.XDG_DATA_HOME, env.XDG_CACHE_HOME,
       env.XDG_RUNTIME_DIR, env.XDG_STATE_HOME, join(scratch, 'input'), join(scratch, 'output')]
       .map(path => mkdir(path, { recursive: true, mode: 0o700 })));
-    if (authSource !== undefined) await project(resolve(authSource), auth);
+    if (!installed && authSource !== undefined) await project(resolve(authSource), auth);
     const expected = Buffer.from(`herdr-zcode Core fixture ${randomUUID()}\n`);
     await writeFile(input, expected, { flag: 'wx', mode: 0o600 });
     const { stdout: version } = await exec(hc, ['--version'], options);
@@ -208,7 +272,10 @@ async function run(signal) {
       ['-c', 'Print :CFBundleShortVersionString', join(bundle, 'Contents/Info.plist')], options);
     // The launcher enforces the pinned minimum before a session can report idle.
     check(/^\d+\.\d+\.\d+$/.test(appVersion.trim()), 'Could not read the installed ZCode Desktop version');
-    if (authSource === undefined) await projectDesktopAccount(bundle, executable, auth);
+    if (installed) {
+      check(appVersion.trim() === '4.0.0', 'Installed candidate certification requires ZCode Desktop 4.0.0');
+      prepared = await prepareInstalledInputs(binary, root, bundle, auth, appVersion.trim(), options);
+    } else if (authSource === undefined) await projectDesktopAccount(bundle, executable, auth);
     signal.throwIfAborted();
 
     serverAttempted = true;
@@ -219,10 +286,12 @@ async function run(signal) {
     const terminalEnv = Object.entries(env).map(([name, value]) => `${name}=${value}`);
     const terminal = await hcCommand(['run', '--bg', '--json', '--cwd', cwd, '--no-parent', '--no-notify', '--',
       '/usr/bin/env', '-i', ...terminalEnv, binary,
-      '--runtime', 'core', '--non-interactive', '--model', DEFAULT_MODEL, '--mode', 'yolo', '--disable-mcp', '--disable-title-gen',
+      '--runtime', 'core', '--non-interactive', '--model', installed ? installedModel : DEFAULT_MODEL, '--mode', 'yolo', '--disable-mcp', '--disable-title-gen',
       '--disable-offpeak', '--disable-dynamic-workflow',
       '--tool-allowlist', 'Read,Write', '--additional-dir', scratch, '--cwd', cwd,
-      '--auth-file', auth, '--consume-auth-file'], 'Could not launch the isolated herdr-zcode terminal');
+      '--auth-file', auth, '--consume-auth-file', ...(installed ? [
+        '--catalog-file', prepared.catalog, '--no-copy-catalog', '--skip-desktop-inspect', '--reasoning-effort', 'max',
+      ] : [])], 'Could not launch the isolated herdr-zcode terminal');
     check(typeof terminal.address === 'string' && terminal.address, 'hc run did not return a terminal address');
     address = terminal.address;
     const get = () => hcCommand(['get', '--json', address], 'Could not read the isolated hc terminal');
@@ -238,6 +307,10 @@ async function run(signal) {
     check(ready?.reported === true && ready.status?.state === 'idle', 'Core did not report idle before the startup deadline');
     check(ready.turn === 0, 'The reported Core terminal already ran a turn before prompt delivery');
     check(await absent(auth), 'Projected auth duplicate still existed before prompt delivery');
+    if (installed) {
+      const screen = await hcCommand(['read', '--json', '--lines', '20', address], 'Could not read the installed candidate model selection');
+      check(JSON.stringify(screen).includes(`Selected: ${installedModel} (reasoning: max)`), 'Installed candidate did not report GLM-5.4 with max reasoning');
+    }
     check(Number.isSafeInteger(ready.pid) && ready.pid > 1, 'hc get did not identify the wrapper PID');
     const childPid = await appServerPid(ready.pid, executable, options);
 
@@ -271,11 +344,18 @@ async function run(signal) {
       'The owned app-server PID changed during the turn');
     const elapsed = await killAndMeasure(hcCommand, address, [ready.pid, childPid]);
     killed = true;
+    if (installed) {
+      const after = await desktopDigests(prepared.home, appVersion.trim());
+      check(after.every((digest, index) => digest === prepared.before[index]),
+        'Native Desktop state comparison is inconclusive because the settings, credentials, or catalog bytes changed');
+    }
     result = {
       hc: '0.1.20', desktop: appVersion.trim(), reported: done.reported, ready: 'idle', completed: 'done', turn: done.turn,
-      authSource: authSource === undefined ? 'desktop' : 'explicit-file',
+      authSource: installed ? 'prepare-isolated' : authSource === undefined ? 'desktop' : 'explicit-file',
       projectedAuthConsumedBeforePrompt: true, exactScopedResult: true, wrapperPid: ready.pid, appServerPid: childPid,
       bothPidsESRCH: true, observedTeardownMs: elapsed, epicTeardownBudgetMs: epicKillBudget, taskTeardownBudgetMs: killBudget,
+      ...(installed ? { scenario: 'installed-candidate', model: installedModel, reasoning: 'max', desktopStateUnchanged: true,
+        receipt: prepared.publicReceipt } : {}),
     };
   } finally {
     if (address && !killed) {
@@ -292,12 +372,15 @@ async function run(signal) {
           check(gone(serverPid), 'Isolated hc server PID survived cleanup');
         }
       } catch {
+        await wipeRemainingAuth(auth).catch(() => {});
         await rm(auth, { force: true }).catch(() => {});
         throw new CheckFailure(`Isolated hc server cleanup failed for ${session}. Routing files kept at ${root}`);
       }
     }
+    await wipeRemainingAuth(auth);
     await rm(root, { recursive: true, force: true });
   }
+  if (installed) result.hcSupervisorESRCH = true;
   console.log(JSON.stringify(result));
 }
 

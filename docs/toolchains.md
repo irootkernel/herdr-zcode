@@ -14,6 +14,10 @@ The installed `herdr-zcode` checks the same nvm location first. If that executab
 
 Use the standalone check by itself. Success exits `0` and returns `compatible: true` with the app version, build, declared minimum, resolved bundle path, and runtime versions. Failure exits `1` and returns `compatible: false`, `reason`, a safe `message`, `appVersion` (the observed version or `null`), `minZcodeAppVersion`, and the resolved `appBundle`. The order is `app_bundle_missing`, `app_bundle_invalid`, `app_version_below_minimum`, `embedded_runtime_invalid`. A usage error reports `invalid_arguments`. If the embedded runtime cannot start, the installed launcher classifies what it can check without it.
 
+The `0.2.0` package advertises `core`, `osc7501`, `catalogFile`, `prepareIsolated`, and `checkDesktop` in `--version --json`. The standalone diagnostic and preparation commands include `scripts/desktop-bootstrap.pl` in the installed runtime. For an installed-candidate check, pack the exact committed source and install the tarball into a disposable prefix. Compare installed files with the archive and record the candidate commit, version, and archive digest. Include the launcher, toolchain scripts, bootstrap helper, and runtime modules in the file list used for package fingerprinting.
+
+Installed `prepare-isolated` uses the selected Desktop bundle's embedded runtime even when a pinned nvm Node is available. It takes the bundle from `--app-bundle` or `/Applications/ZCode.app` and ignores `HERDR_ZCODE_APP_BUNDLE`.
+
 ## Commands
 
 | Command | Purpose |

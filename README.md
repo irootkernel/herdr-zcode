@@ -30,7 +30,7 @@ If the declared Node is missing, `setup` prints the exact `nvm install` command;
 
 Installation copies the package to `~/.local`; repeat it after source changes. Previously published archives remain unchanged: the older v0.1.0 asset does not include this toolchain policy. Build a new archive with `./dev pack` and install it with `./dev npm install --global --prefix "$HOME/.local" /absolute/path/to/archive.tgz`.
 
-The installed command uses the exact pinned nvm Node when available and otherwise uses the embedded Node runtime that ships with ZCode Desktop. The fallback works with an empty `HOME`, unset `NVM_DIR`, and `PATH=/usr/bin:/bin`. To select a different bundle, pass `--app-bundle` or set `HERDR_ZCODE_APP_BUNDLE`. `herdr-zcode --version --json` reports supported runtimes and the minimum Desktop version without opening an account session.
+The installed command uses the exact pinned nvm Node when available and otherwise uses the embedded Node runtime that ships with ZCode Desktop. The fallback works with an empty `HOME`, unset `NVM_DIR`, and `PATH=/usr/bin:/bin`. To select a different bundle, pass `--app-bundle` or set `HERDR_ZCODE_APP_BUNDLE`. `herdr-zcode --version --json` reports supported runtimes, capabilities, and the minimum Desktop version without opening an account session.
 
 The `export` command makes herdr-zcode available in this Terminal window. For new windows, you can use its full path, `"$HOME/.local/bin/herdr-zcode"`, or add the same `export` line to your shell's startup file (`~/.zshrc` for the default macOS shell).
 
@@ -52,6 +52,8 @@ Use `--runtime core` under herdr-core 0.1.20 (`hc`) to report state through OSC 
 In an isolated session, use `--auth-file <path>` to provide a projected Z.AI Coding Plan credential. Supply an owner-readable private JSON file. Add `--consume-auth-file` when the wrapper should remove that file before launching the app-server. Use a disposable copy for consumption. See [projected account authentication](docs/app-server.md#projected-account-authentication) for the file format and lifecycle.
 
 Add `--catalog-file <path>` to a projected TUI or Core session when it needs models from a newer compatible catalog, such as GLM-5.4. Both paths resolve against `--cwd`. An explicit catalog must match the bundled Coding Plan API settings. If validation fails, the session stops before the app-server starts. The wrapper uses the bundled catalog when you omit `--catalog-file`.
+
+On the trusted host, `herdr-zcode prepare-isolated --out-dir <directory> [--app-bundle <path>] [--json]` reads your current Desktop Coding Plan login and prepares the credential and catalog together. Supply an existing owner-only `0700` directory and keep the directory and its ancestors stable. The command writes `auth.json` with mode `0600` and `catalog.json` with mode `0400`. Both forms return one JSON receipt or one safe failure object. Use the returned paths unchanged for `--auth-file --consume-auth-file` and `--catalog-file --no-copy-catalog`. Protect the disposable auth file and remove it after a failed launch. See [trusted-host preparation](docs/app-server.md#trusted-host-preparation) for the receipt and cleanup contract.
 
 Type this request into herdr-zcode and press Enter:
 
@@ -147,7 +149,7 @@ Run `herdr-zcode --check-desktop --json [--app-bundle <path>]` to check the Desk
 | ZCode is below the minimum version | Run `./dev doctor --desktop` to check the minimum, then update ZCode Desktop. |
 | Startup or account error | Open ZCode Desktop, check your Coding Plan login, then restart herdr-zcode. Restart it after switching accounts. |
 | ZCode is installed elsewhere | Start with `herdr-zcode --app-bundle "/path/to/ZCode.app"`. |
-| Selected model is unavailable | Check that your account catalog offers `account:zai-individual-coding-plan/GLM-5.3`. The client reports an error instead of choosing another model. |
+| Selected model is unavailable | Check that the active catalog offers the requested model. If the bundled catalog lacks GLM-5.4, refresh the Desktop Coding Plan catalog and pass the compatible `catalogFile` from a fresh `prepare-isolated` receipt as `--catalog-file`. |
 | Work is waiting for input | Use `/status`, read the pending request, and respond with the matching approval or answer command. |
 
 ## For developers

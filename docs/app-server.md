@@ -42,6 +42,7 @@ To install a standalone copy of the checkout:
 | `lib/desktop-runtime.mjs` | Resolve the installed Electron runtime, prepare a temporary public provider catalog, and isolate the child environment. |
 | `lib/desktop-catalog.mjs` | Validate explicit provider catalog files and compare their Coding Plan API rules with the trusted bundle. |
 | `lib/toolchain.mjs` | Enforce toolchain pins and inspect the Desktop bundle and embedded runtime for doctor and standalone diagnostics. |
+| `lib/prepare-isolated.mjs` | Prepare disposable projected inputs on the trusted host, with bounded credential acquisition and owned-output cleanup. |
 | `lib/desktop-account.mjs` | Load Desktop or projected credentials and share the account overlay, model validation, authentication responses, and stream redaction. |
 | `lib/desktop-keychain.mjs` | Verify the ZCode signer and read Keychain-backed Desktop credentials on Apple Silicon macOS. |
 | `lib/herdr-reporter.mjs` | Send asynchronous status reports for one wrapper's server socket and pane. |
@@ -86,6 +87,16 @@ Projected mode uses a private temporary app state directory and a personal catal
 
 The account overlay uses the parsed catalog and binds its revision to the same absolute path used by the app-server. By default the wrapper writes the validated bytes to the private runtime directory. With `--no-copy-catalog`, it checks the original path and file metadata again before spawn. Keep that input and its path stable for the lifetime of the app-server. When a fresh projected session omits the model and effort, ZCode supplies both defaults. An effort-only request retains the server-selected model. Noninteractive Core stops before delivering a prompt when the requested effort conflicts with a report or neither the configuration RPC nor the subscription confirms it.
 
+## Trusted-host preparation
+
+Run `herdr-zcode prepare-isolated --out-dir <directory> [--app-bundle <path>] [--json]` outside the isolated session with the Desktop user's `HOME`, a minimal `PATH`, and `TMPDIR=/tmp`. The command reads the signed Desktop Keychain source when the selected Coding Plan credential requires it. Desktop account, catalog, endpoint, and credential-secret environment overrides are ignored. Use `--app-bundle` to select a bundle other than `/Applications/ZCode.app`.
+
+Supply an existing `0700` directory owned by the invoking user. The command exclusively reserves `catalog.json` followed by `auth.json`, refuses existing outputs, and binds each output to the held directory and file identities. It writes the exact bytes of a valid, newer default-endpoint Desktop cache or the validated bundle if the cache is absent or unusable. The catalog is at most 4 MiB and has mode `0400`. The auth JSON uses the same projected account contract, is at most 64 KiB, and has mode `0600`.
+
+The receipt contains `authFile`, `catalogFile`, `catalogRevision`, `catalogSHA256`, `catalogSource` (`desktop-cache` or `bundled`), `appVersion`, `minZcodeAppVersion`, `providerId`, and `accountIdentitySHA256`. The two paths are canonical and absolute. Keep the account hash out of general-purpose logs. Use the returned catalog path unchanged when launching with `--no-copy-catalog`.
+
+The launcher budgets 12 seconds, with the last 2 seconds reserved for cleanup. On failure or catchable interrupt it cancels credential helpers and wipes any authentication bytes it wrote before removing owned outputs. Keep the directory and its ancestors stable throughout the call. File identity checks cover observed replacements, while the caller owns namespace cleanup after forced termination or a failed local cleanup. The failure object contains `reason` and `message`. In addition to Desktop compatibility reasons, callers can receive `invalid_arguments`, `output_dir_invalid`, `output_exists`, `desktop_account_unavailable`, `desktop_keychain_unavailable`, `catalog_invalid`, `preparation_timeout`, `preparation_interrupted`, or `projection_failed`.
+
 ## Input and interaction contract
 
 Prompt text queues a turn. `/help`, `/status`, `/stop`, `/exit`, `/allow`, `/deny`, `/choose`, and `/answer` remain responsive while a turn runs. Bracketed paste and `--prompt-file` submit multiline content as one turn. Ordinary pipes submit one turn per line. EOF drains accepted work before exit and declines requests that can no longer receive input; explicit exit cancels work.
@@ -128,7 +139,7 @@ Distinguish offline simulation, real Herdr reporting, and completed model execut
 
 ### Live herdr-core certification
 
-From the source checkout, with authorization for a live Z.AI Coding Plan call, sign in to the Coding Plan in ZCode Desktop and put `hc` 0.1.20 on `PATH`. The harness uses `/Applications/ZCode.app` at the pinned minimum version or newer and explicitly selects `account:zai-individual-coding-plan/GLM-5.3` from the bundled catalog.
+From the source checkout, with authorization for a live Z.AI Coding Plan call, sign in to the Coding Plan in ZCode Desktop and put `hc` 0.1.20 on `PATH`. The baseline scenario uses `/Applications/ZCode.app` at the pinned minimum version or newer and explicitly selects `account:zai-individual-coding-plan/GLM-5.3` from the bundled catalog.
 
 ```sh
 ./dev npm run test:live-herdr-core
@@ -136,6 +147,6 @@ From the source checkout, with authorization for a live Z.AI Coding Plan call, s
 
 The harness reads the current Desktop login through the existing account reader and signed Keychain path when needed. Set `HERDR_ZCODE_LIVE_AUTH_FILE` to the absolute path of a private projected credential to use a separate account source. Both sources stay untouched. The harness writes a disposable `0600` projection and verifies that `--consume-auth-file` removed it before prompt delivery. The isolated wrapper and app-server use only the projected account.
 
-Set `HERDR_ZCODE_LIVE_BINARY` to the absolute path of a standalone installed candidate to verify that package. The default is the checkout's launcher.
+The baseline scenario defaults to the checkout's launcher. For the separate installed-candidate scenario, set `HERDR_ZCODE_LIVE_BINARY` to the absolute path of the installed `0.2.0` candidate and run `./dev npm run test:live-herdr-core -- --scenario installed-candidate` with live authorization. This scenario requires ZCode Desktop `4.0.0`, uses real `prepare-isolated` on the trusted host, and selects `account:zai-individual-coding-plan/GLM-5.4` with `max` effort before sending its one prompt. It records redacted receipt metadata and compares the native settings, credentials, and default-endpoint cache digests before and after the scenario. A concurrent Desktop change makes that result inconclusive. The output keeps those digests, account hash, and credentials private.
 
 The harness starts a unique `HC_SESSION` with private `HOME`, XDG directories, and short physical `TMPDIR`, using `PATH=/usr/bin:/bin` and no `NVM_DIR`. It uses an empty working directory and restricts the session to `Read` and `Write` under `--mode yolo`, with MCP, title generation, off-peak tools, and dynamic workflows disabled. It checks reported `idle`, submits one guarded turn that copies a fresh fixture outside the working directory through `--additional-dir`, then verifies reported `done`, `turn >= 1`, and the exact output. It times `hc kill` until both owned PIDs return `ESRCH`, with a strict 150 ms Epic budget and a 200 ms harness ceiling. It stops only its isolated server and removes its temporary files. If server cleanup fails, it removes the credential copy and reports where it kept the private routing files for recovery.

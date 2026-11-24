@@ -1,16 +1,47 @@
 #!/bin/sh
 set -eu
-entry=$0
-while [ -L "$entry" ]; do
-  base=$(CDPATH= cd -- "$(dirname -- "$entry")" && pwd -P)
-  target=$(readlink "$entry")
-  case "$target" in /*) entry=$target ;; *) entry=$base/$target ;; esac
-done
-root=$(CDPATH= cd -- "$(dirname -- "$entry")/.." && pwd -P)
+resolve_package_root() {
+  entry=$0
+  while [ -L "$entry" ]; do
+    entry_dir=$(dirname -- "$entry") || return 1
+    base=$(CDPATH= cd -- "$entry_dir" && pwd -P) || return 1
+    target=$(readlink "$entry") || return 1
+    case "$target" in /*) entry=$target ;; *) entry=$base/$target ;; esac
+  done
+  entry_dir=$(dirname -- "$entry") || return 1
+  root=$(CDPATH= cd -- "$entry_dir/.." && pwd -P)
+}
+if [ "${1:-}" = prepare-isolated ]; then
+  prepare_bootstrap_failed() {
+    trap '' INT TERM HUP
+    printf '%s\n' '{"reason":"embedded_runtime_invalid","message":"ZCode Desktop embedded runtime is unavailable or incompatible."}'
+    exit 1
+  }
+  prepare_interrupted() {
+    trap '' INT TERM HUP
+    printf '%s\n' '{"reason":"preparation_interrupted","message":"Input preparation was interrupted."}'
+    exit 1
+  }
+  trap 'prepare_interrupted' INT TERM HUP
+  unset PERL5OPT PERL5LIB PERLLIB PERL_UNICODE PERL5DB PERL5DB_CMD PERL_USE_UNSAFE_INC
+  prepare_started=$(/usr/bin/perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC_RAW -e 'printf "%d", clock_gettime(CLOCK_MONOTONIC_RAW) * 1000' 2>/dev/null) || prepare_bootstrap_failed
+  case "$prepare_started" in ''|*[!0-9]*) prepare_bootstrap_failed ;; esac
+  resolve_package_root 2>/dev/null || prepare_bootstrap_failed
+  bootstrap=$root/scripts/desktop-bootstrap.pl
+  [ -f "$bootstrap" ] && [ -r "$bootstrap" ] && [ -x /usr/bin/perl ] || prepare_bootstrap_failed
+  # Open the packaged helper on the guarded shell call before replacing it.
+  run_preparation_bootstrap() {
+    # Darwin /bin/sh is Bash. Keep exec errors in this shell long enough to
+    # emit the structured response rather than letting the builtin exit.
+    shopt -s execfail && command exec /usr/bin/perl /dev/fd/3 "$root" "$prepare_started" "$@"
+  }
+  run_preparation_bootstrap "$@" 2>/dev/null 3< "$bootstrap" || prepare_bootstrap_failed
+fi
+resolve_package_root
 for arg do
   if [ "$arg" = --check-desktop ]; then
     unset PERL5OPT PERL5LIB PERLLIB PERL_UNICODE PERL5DB PERL5DB_CMD PERL_USE_UNSAFE_INC
-    exec /usr/bin/perl "$root/scripts/desktop-bootstrap.pl" "$root" "$@"
+    exec /usr/bin/perl "$root/scripts/desktop-bootstrap.pl" "$root" '' "$@"
   fi
 done
 fail() { printf 'herdr-zcode: %s\n' "$*" >&2; exit 1; }

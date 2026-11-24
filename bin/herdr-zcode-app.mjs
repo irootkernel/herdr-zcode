@@ -3,6 +3,7 @@ import readline from 'node:readline';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readFile, realpath } from 'node:fs/promises';
+import { preparationNow, runPreparation } from '../lib/prepare-isolated.mjs';
 import { AppServerClient, safeErrorSummary } from '../lib/app-server-client.mjs';
 import { AppServerController } from '../lib/app-server-controller.mjs';
 import { desktopAccount, projectedAccount } from '../lib/desktop-account.mjs';
@@ -168,6 +169,12 @@ function checkReasoning(result, effort, { modelOnly = false, requireModelLevel =
 // a child fake server without reading credentials or starting Electron/Herdr.
 export async function main({ argv = process.argv.slice(2), env = process.env,
   input = process.stdin, output = process.stdout, errorOutput = process.stderr } = {}, adapters = {}) {
+  if (argv[0] === 'prepare-isolated') {
+    const inherited = Number(env.HERDR_ZCODE_PREPARE_STARTED_MS);
+    const now = preparationNow();
+    const startedAt = Number.isSafeInteger(inherited) && inherited > 0 && inherited <= now ? inherited : now;
+    return runPreparation({ argv, env, output, startedAt, project: adapters.projectIsolated });
+  }
   if (argv.includes('--check-desktop')) return checkDesktop(argv, env, output);
   try { assertNode({ allowEmbeddedElectron: true }); }
   catch (error) { errorOutput.write('herdr-zcode: ' + error.message + '\n'); return 1; }
@@ -181,7 +188,8 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
     const metadata = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
     if (options.json) {
       write(JSON.stringify({ name: metadata.name, version: metadata.version, runtimes: RUNTIMES, osc7501: true,
-        minZcodeAppVersion: readToolchains().ZCODE_APP_MIN_VERSION }) + '\n');
+        minZcodeAppVersion: readToolchains().ZCODE_APP_MIN_VERSION,
+        capabilities: ['core', 'osc7501', 'catalogFile', 'prepareIsolated', 'checkDesktop'] }) + '\n');
     } else write(`herdr-zcode ${metadata.version}\n`);
     return 0;
   }
@@ -194,6 +202,7 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
 [--prompt-file <path>] [--app-bundle <path>] [--auth-file <path> [--consume-auth-file] [--catalog-file <path>]]
 [--runtime-dir <path>] [--no-copy-catalog] [--skip-desktop-inspect] [--version [--json]] [--bridge-help]
 herdr-zcode --check-desktop --json [--app-bundle <path>]
+herdr-zcode prepare-isolated --out-dir <path> [--app-bundle <path>] [--json]
 The default runtime is tui. Noninteractive input treats slash lines as prompts and blocks on unexpected interaction by default.
 Modes use native ZCode semantics: plan, build (default), edit, guarded, yolo, auto. Only explicit --mode changes the default.
 A $level suffix on --model, such as GLM-5.3$high, overrides the model's advertised default reasoning level.

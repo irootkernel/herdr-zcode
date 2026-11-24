@@ -1,6 +1,6 @@
 {
   "name": "herdr-zcode",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Thin ZCode app-server terminal executor for Herdr",
@@ -28,6 +28,7 @@
     "lib/desktop-catalog.mjs",
     "lib/desktop-keychain.mjs",
     "lib/desktop-runtime.mjs",
+    "lib/prepare-isolated.mjs",
     "lib/herdr-reporter.mjs",
     "README.md",
     "HERDR.md",
