@@ -4,7 +4,7 @@ use Cwd qw(getcwd);
 use Encode qw(decode);
 use Errno qw(EINTR ENOENT);
 use JSON::PP qw(decode_json encode_json);
-use POSIX qw(setsid _exit);
+use POSIX qw(setsid _exit sigprocmask SIG_BLOCK SIG_SETMASK SIGINT SIGTERM SIGHUP WIFSIGNALED WTERMSIG);
 use Time::HiRes qw(alarm clock_gettime CLOCK_MONOTONIC_RAW);
 
 my %messages = (
@@ -26,17 +26,32 @@ my %prepare_messages = (
     projection_failed => 'Could not write or clean up the prepared inputs.',
 );
 my ($caught_signal, $forward_signals, $prepare);
+my %interrupt_names = (SIGINT() => 'INT', SIGTERM() => 'TERM', SIGHUP() => 'HUP');
 
 # Capture only a bounded command result. Keep the bootstrap and any embedded
 # probe it starts in a separate process group so a timeout cannot leak output.
 sub capture {
     my ($timeout, @command) = @_;
-    return if $timeout <= 0;
+    return if $timeout <= 0 || ($prepare && $caught_signal);
     pipe(my $reader, my $writer) or return;
+    my $original_mask;
+    if ($prepare) {
+        $original_mask = POSIX::SigSet->new;
+        # Keep a forwarded interrupt pending until the child installs its
+        # default dispositions. Perl's inherited handlers would swallow it.
+        sigprocmask(SIG_BLOCK, POSIX::SigSet->new(keys %interrupt_names), $original_mask) or return;
+    }
     my $pid = fork();
-    return unless defined $pid;
+    if (!defined $pid) {
+        sigprocmask(SIG_SETMASK, $original_mask) if $prepare;
+        return;
+    }
     if ($pid == 0) {
-        $SIG{INT} = $SIG{TERM} = $SIG{HUP} = 'DEFAULT' if $prepare;
+        if ($prepare) {
+            $SIG{INT} = $SIG{TERM} = $SIG{HUP} = 'DEFAULT';
+            _exit(1) if $caught_signal;
+            sigprocmask(SIG_SETMASK, $original_mask) or _exit(1);
+        }
         close $reader;
         setsid() >= 0 or _exit(1);
         open(STDIN, '<', '/dev/null') or _exit(1);
@@ -59,6 +74,9 @@ sub capture {
         local $SIG{TERM} = sub { $interrupt->('TERM'); };
         local $SIG{HUP} = sub { $interrupt->('HUP'); };
         alarm $timeout;
+        if ($prepare) {
+            sigprocmask(SIG_SETMASK, $original_mask) or die "could not restore interrupt mask\n";
+        }
         $interrupt->($caught_signal) if $prepare && $caught_signal;
         while (1) {
             my $size = sysread($reader, my $chunk, 4096);
@@ -81,6 +99,9 @@ sub capture {
         kill 'KILL', -$pid, $pid;
         waitpid($pid, 0);
         return;
+    }
+    if ($prepare && WIFSIGNALED($status)) {
+        $caught_signal ||= $interrupt_names{WTERMSIG($status)};
     }
     return ($status, $output);
 }

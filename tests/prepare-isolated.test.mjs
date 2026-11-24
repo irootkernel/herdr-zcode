@@ -107,6 +107,17 @@ test('isolated preparation falls back to validated bundled bytes when the cache 
   }
 });
 
+test('isolated preparation removes reservations when projected credentials exceed 64 KiB', async t => {
+  const f = await fixture(t);
+  const result = await run(t, f, { project: options => projectIsolated(options, {
+    inspect: f.inspect,
+    readLogin: async () => ({ ...login, apiKey: 'x'.repeat(65536) }),
+  }) });
+  assert.equal(result.code, 1);
+  assert.equal(result.json.reason, 'projection_failed');
+  assert.deepEqual(await readdir(f.outDir), []);
+});
+
 test('isolated preparation ignores endpoint and credential overrides in the caller environment', async t => {
   const f = await fixture(t);
   const active = catalog(48);
@@ -421,6 +432,23 @@ test('installed prepare-isolated produces a private receipt and one safe JSON er
   assert.deepEqual(await readdir(f.outDir), []);
 });
 
+test('installed prepare-isolated --json uses embedded Node even when a pinned nvm executable exists', async t => {
+  const f = await fixture(t);
+  const launcher = await installLauncher(f);
+  const nvm = join(f.root, 'nvm');
+  const pinned = join(nvm, 'versions/node', 'v' + versions.NODE_VERSION, 'bin/node');
+  await mkdir(dirname(pinned), { recursive: true });
+  await writeFile(pinned, '#!/bin/sh\nexit 96\n', { mode: 0o755 });
+  const { stdout, stderr } = await exec(launcher.binary, [...launcher.args, '--json'], {
+    ...launcher.options, env: { ...launcher.options.env, NVM_DIR: nvm },
+  });
+  const receipt = safeResponse(stdout, stderr);
+  assert.equal(receipt.authFile, join(f.outDir, 'auth.json'));
+  assert.equal(receipt.catalogFile, join(f.outDir, 'catalog.json'));
+  assert.equal(receipt.catalogSHA256, sha256(f.bundled.bytes));
+  assert.equal(await readFile(launcher.bootstrapMarker, 'utf8'), 'started');
+});
+
 test('installed preparation reports clock, helper and path-discovery failures before starting the Desktop probe', async t => {
   const f = await fixture(t);
   const launcher = await installLauncher(f);
@@ -616,6 +644,27 @@ test('prepare-isolated reaps a stalled embedded probe when the shared work deadl
   assert.ok(Number.isSafeInteger(pid) && pid > 1);
   assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
   assert.deepEqual(await readdir(f.outDir), []);
+});
+
+test('installed preparation stops before Node when interrupted between fork and child signal reset', async t => {
+  const f = await fixture(t);
+  const launcher = await installLauncher(f);
+  const bootstrap = join(launcher.packageDir, 'scripts/desktop-bootstrap.pl');
+  const original = await readFile(bootstrap, 'utf8');
+  const forkChild = 'if ($pid == 0) {';
+  assert.ok(original.includes(forkChild));
+
+  for (const signal of ['INT', 'TERM', 'HUP']) {
+    await t.test(signal, async () => {
+      // Inject into the installed fixture at the otherwise timing-dependent fork boundary.
+      const interrupt = "        kill '" + signal + "', $$ if $forward_signals;";
+      await writeFile(bootstrap, original.replace(forkChild, () => forkChild + '\n' + interrupt));
+      await launcherFailure(launcher, 'preparation_interrupted');
+      await assert.rejects(lstat(launcher.bootstrapMarker), { code: 'ENOENT' });
+      await assert.rejects(lstat(launcher.probeMarker), { code: 'ENOENT' });
+      assert.deepEqual(await readdir(f.outDir), []);
+    });
+  }
 });
 
 test('installed prepare-isolated forwards catchable interruption to its active embedded JS process', async t => {
