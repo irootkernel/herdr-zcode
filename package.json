@@ -24,6 +24,7 @@
     "lib/runtime-profile.mjs",
     "lib/osc7501-reporter.mjs",
     "lib/desktop-account.mjs",
+    "lib/desktop-catalog.mjs",
     "lib/desktop-keychain.mjs",
     "lib/desktop-runtime.mjs",
     "lib/herdr-reporter.mjs",

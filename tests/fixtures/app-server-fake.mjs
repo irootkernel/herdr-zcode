@@ -1,7 +1,7 @@
 import readline from 'node:readline';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 const scenario = process.env.TEST_SCENARIO || 'normal';
 if (scenario === 'hang-cleanup' || scenario === 'hang-bootstrap') process.on('SIGTERM', () => {});
@@ -31,13 +31,23 @@ let thoughtChanges = 0, thoughtLevel, interactionObserved;
 const snapshot = () => ({ session: { sessionId }, settings: { model: {
   current: scenario === 'wrong-model' ? { providerId: 'wrong', modelId: 'other' } : current,
   available: scenario === 'missing-model' ? [] : available },
-  ...(preserveDefault && thoughtLevel && scenario !== 'reasoning-unreported' ? {
+  ...(preserveDefault && thoughtLevel && scenario !== 'reasoning-unreported' && process.env.TEST_UNREPORTED_THOUGHT !== '1' ? {
     thoughtLevel: { current: thoughtLevel, available: ['low', 'high'], defaultLevel: 'low', enabled: true },
   } : {}) } });
 const snapshotWithEffort = level => {
   const state = snapshot();
   if (preserveDefault) state.settings.thoughtLevel.current = level;
   else state.settings.model.current = { ...state.settings.model.current, options: { reasoningLevel: level } };
+  return state;
+};
+const reasoningSnapshot = stage => {
+  const observation = process.env.TEST_PROJECTED_REASONING_OBSERVATION;
+  if (observation === `${stage}-conflict`) return snapshotWithEffort('low');
+  const state = snapshot();
+  if (observation === `${stage}-missing`) {
+    const { providerId, modelId } = state.settings.model.current;
+    state.settings.model.current = { providerId, modelId };
+  }
   return state;
 };
 const observedSnapshot = (activeTurnId, eventSeq, backgroundJobs = []) => ({ ...snapshot(),
@@ -206,7 +216,10 @@ rl.on('line', line => {
           assert.equal(ZCODE_DATA_BASE_DIR, HOME);
           assert.equal(ZCODE_PERSONAL_PROVIDER_CONFIG_FILE, join(HOME, '.zcode/v2/provider_config.json'));
           const digest = createHash('sha256').update(ZCODE_BUILTIN_PROVIDER_CONFIG_FILE).digest('hex');
-          assert.equal(p.basedOnZCodeBuiltinRevision, `zcode-builtin:31:${digest}`);
+          const expected = process.env.TEST_PROJECTED_CATALOG;
+          const revision = expected ? 48 : 31;
+          if (expected) assert.deepEqual(readFileSync(ZCODE_BUILTIN_PROVIDER_CONFIG_FILE), Buffer.from(expected, 'base64'));
+          assert.equal(p.basedOnZCodeBuiltinRevision, `zcode-builtin:${revision}:${digest}`);
         } else assert.equal(p.basedOnZCodeBuiltinRevision, 'zcode-builtin:7:active-path-digest');
         const prefs = await reverse('session/requestRuntimePreferences', {}, m.id);
         assert.deepEqual(prefs, { nativeSearchEnhancementsEnabled: false, subagentRuntimeConfigEnabled: false, memoryEnabled: false,
@@ -248,7 +261,7 @@ rl.on('line', line => {
           break;
         }
         current = p.model;
-        reply(m.id, scenario === 'explicit-reasoning-mismatch' ? snapshotWithEffort('low') : snapshot()); break;
+        reply(m.id, scenario === 'explicit-reasoning-mismatch' ? snapshotWithEffort('low') : reasoningSnapshot('rpc')); break;
       case 'session/setThoughtLevel':
         assert.equal(p.sessionId, sessionId);
         assert.equal(p.thoughtLevel, process.env.TEST_THOUGHT_LEVEL);
@@ -260,7 +273,7 @@ rl.on('line', line => {
           break;
         }
         thoughtLevel = p.thoughtLevel;
-        reply(m.id, scenario === 'reasoning-response-mismatch' ? snapshotWithEffort('low') : snapshot()); break;
+        reply(m.id, scenario === 'reasoning-response-mismatch' ? snapshotWithEffort('low') : reasoningSnapshot('rpc')); break;
       case 'session/setMode': assert.equal(p.mode, 'guarded'); reply(m.id, {}); break;
       case 'session/subscribe':
         assert.equal(p.includeSnapshot, true);
@@ -273,7 +286,7 @@ rl.on('line', line => {
         } else if (['reasoning-subscribe-mismatch', 'explicit-reasoning-subscribe-mismatch'].includes(scenario)) {
           reply(m.id, { snapshot: snapshotWithEffort('low') });
         }
-        else reply(m.id, { snapshot: snapshot() });
+        else reply(m.id, { snapshot: reasoningSnapshot('subscribe') });
         break;
       case 'session/send':
         assert.notEqual(scenario, 'startup-block-before-rejection');

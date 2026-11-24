@@ -51,6 +51,8 @@ Use `--runtime core` under herdr-core 0.1.20 (`hc`) to report state through OSC 
 
 In an isolated session, use `--auth-file <path>` to provide a projected Z.AI Coding Plan credential. Supply an owner-readable private JSON file. Add `--consume-auth-file` when the wrapper should remove that file before launching the app-server. Use a disposable copy for consumption. See [projected account authentication](docs/app-server.md#projected-account-authentication) for the file format and lifecycle.
 
+Add `--catalog-file <path>` to a projected TUI or Core session when it needs models from a newer compatible catalog, such as GLM-5.4. Both paths resolve against `--cwd`. An explicit catalog must match the bundled Coding Plan API settings. If validation fails, the session stops before the app-server starts. The wrapper uses the bundled catalog when you omit `--catalog-file`.
+
 Type this request into herdr-zcode and press Enter:
 
 ```text

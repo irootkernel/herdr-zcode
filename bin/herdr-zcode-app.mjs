@@ -22,7 +22,7 @@ const CREATE_SWITCHES = {
 };
 const TOOL_FLAGS = { '--tool-allowlist': 'toolAllowlist', '--tool-denylist': 'toolDenylist' };
 const VALUE_FLAGS = new Set(['--cwd', '--model', '--mode', '--resume', '--prompt-file', '--app-bundle', '--runtime-dir',
-  '--auth-file', '--interaction-policy', '--additional-dir', '--persistence', '--reasoning-effort', '--thought-level', ...Object.keys(TOOL_FLAGS)]);
+  '--auth-file', '--catalog-file', '--interaction-policy', '--additional-dir', '--persistence', '--reasoning-effort', '--thought-level', ...Object.keys(TOOL_FLAGS)]);
 function requestedReasoning(current, next) {
   const level = next.trim();
   if (!level) throw new Error('Reasoning effort must be non-empty');
@@ -96,6 +96,7 @@ export function parseArgs(argv) {
   if (!['plan', 'build', 'edit', 'guarded', 'yolo', 'auto'].includes(options.mode)) throw new Error('Use mode plan, build, edit, guarded, yolo, or auto');
   if (options.json && !options.version) throw new Error('--json requires --version');
   if (options.consumeAuthFile && !options['auth-file']) throw new Error('--consume-auth-file requires --auth-file');
+  if (options['catalog-file'] !== undefined && !options['auth-file']) throw new Error('--catalog-file requires --auth-file');
   return options;
 }
 
@@ -103,11 +104,15 @@ function sameModel(actual, expected) {
   return actual?.providerId === expected.providerId && actual?.modelId === expected.modelId;
 }
 
-function checkReasoning(result, effort, modelRequired = false) {
+function modelSelectionError(message) {
+  return Object.assign(new Error(message), { safeSummary: message });
+}
+
+function checkReasoning(result, effort, { modelOnly = false, requireModelLevel = false } = {}) {
   const modelLevel = result?.settings?.model?.current?.options?.reasoningLevel;
-  const observed = modelRequired ? [modelLevel]
-    : [modelLevel, result?.settings?.thoughtLevel?.current, result?.thoughtLevel].filter(level => level !== undefined);
-  if (observed.some(level => level !== effort)) {
+  const reported = modelOnly ? [modelLevel] : [modelLevel, result?.settings?.thoughtLevel?.current, result?.thoughtLevel];
+  const observed = reported.filter(level => level !== undefined);
+  if ((requireModelLevel && modelLevel === undefined) || observed.some(level => level !== effort)) {
     const message = 'Selected reasoning level was not applied';
     throw Object.assign(new Error(message), { safeSummary: message });
   }
@@ -138,7 +143,7 @@ export async function main({ argv = process.argv.slice(2), env = process.env,
 [--reasoning-effort <level> | --thought-level <level>] [--preserve-default-model]
 [--tool-allowlist <csv>] [--tool-denylist <csv>] [--disable-mcp] [--disable-title-gen]
 [--disable-offpeak] [--disable-dynamic-workflow] [--additional-dir <path>] [--persistence <immediate|deferred>]
-[--prompt-file <path>] [--app-bundle <path>] [--auth-file <path> [--consume-auth-file]]
+[--prompt-file <path>] [--app-bundle <path>] [--auth-file <path> [--consume-auth-file] [--catalog-file <path>]]
 [--runtime-dir <path>] [--no-copy-catalog] [--skip-desktop-inspect] [--version [--json]] [--bridge-help]
 The default runtime is tui. Noninteractive input treats slash lines as prompts and blocks on unexpected interaction by default.
 Modes use native ZCode semantics: plan, build (default), edit, guarded, yolo, auto. Only explicit --mode changes the default.
@@ -232,8 +237,10 @@ Interactive input accepts /help and /exit. EOF drains queued work. Ctrl-C stops 
     if (signalCode) throw exitStartup;
     if (profile.name === 'tui') reporter = profile.createReporter();
     const authFile = options['auth-file'];
+    const catalogFile = options['catalog-file'];
     runtime = await (adapters.prepareDesktopRuntime ?? prepareDesktopRuntime)({ env, appBundle: options['app-bundle'],
-      tmpRoot: options['runtime-dir'], copyCatalog: options.copyCatalog, skipInspect: options.skipDesktopInspect, useKeychain: !authFile });
+      tmpRoot: options['runtime-dir'], copyCatalog: options.copyCatalog, skipInspect: options.skipDesktopInspect, useKeychain: !authFile,
+      catalogFile: catalogFile === undefined ? undefined : resolve(options.cwd, catalogFile) });
     if (signalCode) throw exitStartup;
     // Remove terminal routing and hook credentials even from custom adapters.
     const childEnv = appServerEnvironment(runtime.env);
@@ -256,7 +263,7 @@ Interactive input accepts /help and /exit. EOF drains queued work. Ctrl-C stops 
     const accountModel = options.model ?? null;
     const account = authFile
       ? await (adapters.projectedAccount ?? projectedAccount)(runtime.configPath, resolve(options.cwd, authFile), {
-        model: accountModel, consume: options.consumeAuthFile,
+        model: accountModel, consume: options.consumeAuthFile, catalog: runtime.catalog, bundledCatalog: runtime.bundledCatalog,
       })
       : await (adapters.desktopAccount ?? desktopAccount)(runtime.configPath, {
         env, home: runtime.home, model: accountModel, withOSCredentialReader: runtime.withOSCredentialReader,
@@ -269,6 +276,8 @@ Interactive input accepts /help and /exit. EOF drains queued work. Ctrl-C stops 
     client.handle('session/requestRuntimePreferences', () => ({ nativeSearchEnhancementsEnabled: false,
       subagentRuntimeConfigEnabled: false, memoryEnabled: false,
       askUserQuestionAutoResolutionEnabled: Boolean(options.nonInteractive || options.autoResolveQuestions) }));
+    if (runtime.recheckCatalog) await runtime.recheckCatalog();
+    if (controller.closing) throw exitStartup;
     client.start();
     const rpc = (method, params) => client.request(method, params, adapters.rpcTimeout);
     await rpc('provider/updateAccountConfig', account.config);
@@ -287,20 +296,27 @@ Interactive input accepts /help and /exit. EOF drains queued work. Ctrl-C stops 
     const selection = account.selection;
     const current = created.settings?.model?.current ?? null;
     controller.expectedModel = selection ?? current;
+    const requireReasoningEvidence = profile.name === 'core' && options.nonInteractive;
+    const modelReasoning = { modelOnly: Boolean(selection), requireModelLevel: Boolean(selection) };
     let reasoningLevel = options.reasoning;
     let reasoningVerified = false;
     if (selection) {
       const chosen = created.settings?.model?.available?.find(item => sameModel(item.ref, selection));
-      if (!chosen || chosen.availability === 'unavailable') throw new Error('Selected model unavailable');
+      if (!chosen || chosen.availability === 'unavailable') throw modelSelectionError('Selected model unavailable');
+      const levels = chosen.reasoning?.levels;
+      if (authFile && options.reasoning && Array.isArray(levels) && levels.length && !levels.some(level => level?.value === options.reasoning)) {
+        const message = 'Requested reasoning level is unavailable for the selected model';
+        throw Object.assign(new Error(message), { safeSummary: message });
+      }
       reasoningLevel ??= chosen.reasoning?.defaultLevel;
       const model = reasoningLevel ? { ...selection, options: { reasoningLevel } } : selection;
       const configured = await rpc('session/setModel', { sessionId, model, persistAsWorkspaceLastUsed: false });
-      if (!sameModel(configured?.settings?.model?.current, model)) throw new Error('Selected model was not applied');
-      if (options.reasoning) checkReasoning(configured, options.reasoning, true);
+      if (!sameModel(configured?.settings?.model?.current, model)) throw modelSelectionError('Selected model was not applied');
+      if (options.reasoning) reasoningVerified = checkReasoning(configured, options.reasoning, modelReasoning);
     } else if (options.reasoning) {
       const configured = await rpc('session/setThoughtLevel', { sessionId, thoughtLevel: options.reasoning });
       const observed = configured?.settings?.model?.current;
-      if (current && observed && !sameModel(observed, current)) throw new Error('Selected model changed while applying reasoning');
+      if (current && observed && !sameModel(observed, current)) throw modelSelectionError('Selected model changed while applying reasoning');
       controller.expectedModel ??= observed;
       reasoningVerified = checkReasoning(configured, options.reasoning);
     }
@@ -309,10 +325,16 @@ Interactive input accepts /help and /exit. EOF drains queued work. Ctrl-C stops 
     const subscribed = await rpc('session/subscribe', { sessionId, deliveryKind: 'desktop-continuous', includeSnapshot: true });
     const subscribedModel = subscribed?.snapshot?.settings?.model?.current;
     if (controller.closing) throw exitStartup;
-    if (controller.expectedModel && !sameModel(subscribedModel, controller.expectedModel)) throw new Error('Selected model changed before subscription');
+    if (controller.expectedModel && !sameModel(subscribedModel, controller.expectedModel)) throw modelSelectionError('Selected model changed before subscription');
     if (options.reasoning) {
-      const subscribedEffort = checkReasoning(subscribed?.snapshot, options.reasoning, Boolean(selection));
-      if (!selection && !reasoningVerified && !subscribedEffort) reasoningLevel = undefined;
+      const subscribedEffort = checkReasoning(subscribed?.snapshot, options.reasoning, modelReasoning);
+      if (!reasoningVerified && !subscribedEffort) {
+        if (requireReasoningEvidence) {
+          const message = 'Selected reasoning level was not confirmed';
+          throw Object.assign(new Error(message), { safeSummary: message });
+        }
+        reasoningLevel = undefined;
+      }
     } else if (!selection) {
       reasoningLevel = subscribedModel?.options?.reasoningLevel ?? subscribed?.snapshot?.settings?.thoughtLevel?.current;
     }

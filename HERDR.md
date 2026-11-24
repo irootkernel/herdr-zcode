@@ -104,6 +104,8 @@ Each coordinator tracks its executors and file ownership. Separate panes do not 
 
 Start the installed command as an executable with `hc run` and select `--runtime core --non-interactive`. Set the working directory, allowed tools, and additional directories to the task's authorized scope. Use a disposable projected credential with `--auth-file <path> --consume-auth-file` when supplying a Coding Plan account for isolated automation.
 
+Supply `--catalog-file <path>` when the projected session needs a compatible catalog with models beyond the bundled list. If you also pass `--no-copy-catalog`, keep the file and its path stable until the app-server exits. An explicit reasoning effort must be confirmed before noninteractive Core sends a prompt.
+
 Read the assigned terminal with `hc get --json <terminal>`. Wait for `reported: true` and `status.state: idle` before delivering a task. Use `hc send --if idle --wait <terminal> <prompt>` to guard delivery. A completed turn reports `done` and advances the turn counter. Check the result artifacts before accepting the work. A `blocked` or `error` state needs investigation.
 
 Use `hc kill <terminal>` to stop a terminal you own. Core keeps its app-server in the terminal's process group and takes the fast teardown path on hangup or termination. The [live Core test](docs/app-server.md#live-herdr-core-certification) uses its own daemon and checks that both processes are gone.

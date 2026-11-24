@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import { mkdtemp, mkdir, writeFile, readFile, rm, access, chmod, link, open, realpath, symlink } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { main, parseArgs } from '../bin/herdr-zcode-app.mjs';
 import { desktopAccount, projectedAccount, DEFAULT_MODEL } from '../lib/desktop-account.mjs';
+import { codingPlanRule, compatibleCodingPlanRule, readExplicitCatalog } from '../lib/desktop-catalog.mjs';
 import { prepareDesktopRuntime } from '../lib/desktop-runtime.mjs';
 import { keychainCipherScript, OS_CREDENTIAL_PREFIX } from '../lib/desktop-keychain.mjs';
 import { readToolchains } from '../lib/toolchain.mjs';
@@ -20,6 +21,12 @@ const providerId = 'account:zai-individual-coding-plan';
 const selected = { providerId, modelId: 'GLM-5.3' };
 const request = { providerId, accountAccess: { type: 'zhipu-account', mode: 'individual-coding-plan', accountType: 'zai' } };
 const digest = text => createHash('sha256').update(text).digest('hex');
+function explicitFixture(revision = 48) {
+  return { schemaVersion: 1, revision, config: { modelConfigRules: {}, providerConfigRules: { providerRules: [{
+    providerId, config: { access: request.accountAccess, api: { type: 'anthropic', baseUrl: 'https://fixture.invalid/coding/plan' },
+      builtinModelIds: revision === 44 ? ['GLM-5.3'] : ['GLM-5.3', 'GLM-5.4'] },
+  }] } } };
+}
 function encrypted(text, secret) {
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', createHash('sha256').update(secret).digest(), iv);
@@ -364,13 +371,23 @@ test('projected auth wipes an open writable inode before unlink and unlinks an i
   }
 });
 
-async function projectedEntrypoint(t, { unremovable = false, replaceAtUnlink = false, nonInteractive = false } = {}) {
+async function projectedEntrypoint(t, {
+  unremovable = false, replaceAtUnlink = false, nonInteractive = false, explicit, copy = false,
+  runtimeName = 'core', extraArgs = [], fakeEnv = {}, changeCatalogBeforeSpawn = false, auth = projection,
+  bundledCatalog,
+} = {}) {
   const f = await fixture(t);
   const source = join(f.root, 'projection');
   await mkdir(source);
   const authPath = join(source, 'auth.json');
   const backup = join(source, 'renamed-auth.json');
-  await writeFile(authPath, JSON.stringify(projection), { mode: replaceAtUnlink ? 0o400 : 0o600 });
+  const catalogPath = join(source, 'catalog.json');
+  if (explicit !== undefined) {
+    await writeFile(f.catalogPath, JSON.stringify(bundledCatalog ?? explicitFixture(44)));
+    await writeFile(catalogPath, explicit, { mode: 0o644 });
+  }
+  const nativeState = await Promise.all([f.settingPath, f.credentialsPath, f.catalogPath].map(path => readFile(path)));
+  await writeFile(authPath, JSON.stringify(auth), { mode: replaceAtUnlink ? 0o400 : 0o600 });
   if (unremovable) await chmod(source, 0o500);
   const nativeHome = join(f.root, 'nonexistent-desktop-home');
   const env = { TMPDIR: f.root, HOME: nativeHome, ZCODE_DATA_BASE_DIR: nativeHome, XDG_DATA_HOME: nativeHome,
@@ -379,7 +396,7 @@ async function projectedEntrypoint(t, { unremovable = false, replaceAtUnlink = f
     ZCODE_PERSONAL_PROVIDER_CONFIG_FILE: join(nativeHome, '.zcode/v2/personal.json'),
     ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: join(nativeHome, '.zcode/v2/builtin.json') };
   const input = new PassThrough(), output = new PassThrough(), errorOutput = new PassThrough();
-  let transcript = '', errors = '', launches = 0, desktopReads = 0, keychainReads = 0, replacements = 0, runtime, authError;
+  let transcript = '', errors = '', launches = 0, desktopReads = 0, keychainReads = 0, replacements = 0, promptWrites = 0, runtime, authError;
   output.on('data', chunk => { transcript += chunk; });
   errorOutput.on('data', chunk => { errors += chunk; });
   const fake = fileURLToPath(new URL('./fixtures/app-server-fake.mjs', import.meta.url));
@@ -399,9 +416,10 @@ async function projectedEntrypoint(t, { unremovable = false, replaceAtUnlink = f
   }
   try {
     const code = await main({ env, input, output, errorOutput, argv: [
-      '--runtime', 'core', '--cwd', f.root, '--app-bundle', f.appBundle, '--skip-desktop-inspect',
-      '--no-copy-catalog', '--auth-file', 'projection/auth.json', '--consume-auth-file',
-      ...(nonInteractive ? ['--non-interactive'] : []),
+      '--runtime', runtimeName, '--cwd', f.root, '--app-bundle', f.appBundle, '--skip-desktop-inspect',
+      '--auth-file', 'projection/auth.json', '--consume-auth-file', ...(copy ? [] : ['--no-copy-catalog']),
+      ...(explicit === undefined ? [] : ['--catalog-file', 'projection/catalog.json']),
+      ...(nonInteractive ? ['--non-interactive'] : []), ...extraArgs,
     ] }, {
       rpcTimeout: 3000, exitTimeout: 200,
       async prepareDesktopRuntime(options) {
@@ -412,34 +430,50 @@ async function projectedEntrypoint(t, { unremovable = false, replaceAtUnlink = f
       },
       desktopAccount() { desktopReads++; throw new Error('Unexpected Desktop account read'); },
       async projectedAccount(...args) {
-        try { return await projectedAccount(...args); }
+        try {
+          const account = await projectedAccount(...args);
+          if (changeCatalogBeforeSpawn) await chmod(catalogPath, 0o400);
+          return account;
+        }
         catch (error) { authError = error; throw error; }
       },
       launch(executable, args, options) {
         assert.equal(existsSync(authPath), false);
+        assert.equal(options.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE, runtime.configPath);
         launches++;
         const child = spawn(process.execPath, [fake], { ...options, env: { ...options.env,
-          TEST_SCENARIO: 'projected-auth', TEST_PROJECTED_AUTH_FILE: authPath } });
+          TEST_SCENARIO: 'projected-auth', TEST_PROJECTED_AUTH_FILE: authPath,
+          ...(explicit === undefined ? {} : { TEST_PROJECTED_CATALOG: Buffer.from(explicit).toString('base64') }),
+          TEST_AUTO_RESOLVE_QUESTIONS: nonInteractive ? '1' : '0', ...fakeEnv } });
+        const write = child.stdin.write.bind(child.stdin);
+        child.stdin.write = (chunk, ...args) => {
+          if (String(chunk).includes('"method":"session/send"')) promptWrites++;
+          return write(chunk, ...args);
+        };
         return child;
       },
     });
     assert.equal(keychainReads, 0);
     assert.equal(desktopReads, 0);
     assert.doesNotMatch(transcript + errors, /header-secret|fixture-legacy-secret/);
-    assert.equal(runtime.configPath, await realpath(f.catalogPath));
-    assert.equal(runtime.env.HOME, runtime.home);
-    assert.equal(runtime.env.ZCODE_DATA_BASE_DIR, runtime.home);
-    assert.equal(runtime.env.XDG_DATA_HOME, runtime.home);
-    assert.equal(runtime.env.TMPDIR, env.TMPDIR);
-    assert.equal(runtime.env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE, join(runtime.home, '.zcode/v2/provider_config.json'));
-    assert.ok(runtime.home.startsWith(f.root + '/herdr-zcode-'));
-    for (const key of ['ZCODE_HOME', 'ZCODE_STORAGE_DIR', 'ZCODE_CREDENTIAL_SECRET', 'ZCODE_CREDENTIAL_SECRET_FILE']) {
-      assert.equal(runtime.env[key], undefined, key);
+    assert.deepEqual(await Promise.all([f.settingPath, f.credentialsPath, f.catalogPath].map(path => readFile(path))), nativeState);
+    if (runtime) {
+      const original = explicit === undefined ? await realpath(f.catalogPath) : catalogPath;
+      assert.equal(runtime.configPath, copy ? join(runtime.home, 'zcode-builtin.json') : original);
+      assert.equal(runtime.env.HOME, runtime.home);
+      assert.equal(runtime.env.ZCODE_DATA_BASE_DIR, runtime.home);
+      assert.equal(runtime.env.XDG_DATA_HOME, runtime.home);
+      assert.equal(runtime.env.TMPDIR, env.TMPDIR);
+      assert.equal(runtime.env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE, join(runtime.home, '.zcode/v2/provider_config.json'));
+      assert.ok(runtime.home.startsWith(f.root + '/herdr-zcode-'));
+      for (const key of ['ZCODE_HOME', 'ZCODE_STORAGE_DIR', 'ZCODE_CREDENTIAL_SECRET', 'ZCODE_CREDENTIAL_SECRET_FILE']) {
+        assert.equal(runtime.env[key], undefined, key);
+      }
+      await assert.rejects(access(runtime.home), { code: 'ENOENT' });
     }
-    await assert.rejects(access(runtime.home), { code: 'ENOENT' });
     await assert.rejects(access(nativeHome), { code: 'ENOENT' });
     await access(f.catalogPath);
-    return { code, transcript, errors, launches, authPath, authError, backup, replacements };
+    return { code, transcript, errors, launches, authPath, authError, backup, replacements, promptWrites };
   } finally {
     if (unlinkMock) {
       unlinkMock.mock.restore();
@@ -479,4 +513,243 @@ test('replacing the projected path at unlink reports blocked auth and withholds 
 
 test('--consume-auth-file requires the explicit input path', () => {
   assert.throws(() => parseArgs(['--consume-auth-file']), /requires --auth-file/);
+});
+
+test('--catalog-file requires projected auth at argument parsing', () => {
+  assert.throws(() => parseArgs(['--catalog-file', 'catalog.json']), /requires --auth-file/);
+  assert.equal(parseArgs(['--catalog-file', 'catalog.json', '--auth-file', 'auth.json'])['catalog-file'], 'catalog.json');
+});
+
+test('explicit catalog descriptor rejects unsafe paths, mode, owner, size and read-time changes', async t => {
+  const f = await fixture(t);
+  const path = join(f.root, 'explicit.json');
+  const bytes = Buffer.from(JSON.stringify(explicitFixture()));
+  const reject = target => assert.rejects(readExplicitCatalog(target), /^Error: catalog_invalid:/);
+  await writeFile(path, bytes, { mode: 0o644 });
+  await chmod(path, 0o644);
+  assert.deepEqual((await readExplicitCatalog(path)).bytes, bytes);
+  for (const mode of [0o664, 0o666]) {
+    await chmod(path, mode);
+    await reject(path);
+  }
+  await chmod(path, 0o644);
+  const symbolic = join(f.root, 'sym'), hard = join(f.root, 'hard'), fifo = join(f.root, 'fifo');
+  await symlink(path, symbolic);
+  await reject(symbolic);
+  await link(path, hard);
+  await reject(path);
+  await rm(hard);
+  assert.equal(spawnSync('/usr/bin/mkfifo', [fifo]).status, 0);
+  await reject(fifo);
+  await reject(f.root);
+
+  const lstat = fs.lstat;
+  const foreign = t.mock.method(fs, 'lstat', async (...args) => {
+    const info = await lstat(...args);
+    if (args[0] === path) info.uid += 1n;
+    return info;
+  });
+  syncBuiltinESMExports();
+  try { await reject(path); }
+  finally { foreign.mock.restore(); syncBuiltinESMExports(); }
+
+  const realOpen = fs.open;
+  let flagsSeen;
+  const raced = t.mock.method(fs, 'open', async (target, flags, ...args) => {
+    const descriptor = await realOpen(target, flags, ...args);
+    if (target !== path) return descriptor;
+    flagsSeen = flags;
+    const read = descriptor.read.bind(descriptor);
+    descriptor.read = async (...args) => {
+      const result = await read(...args);
+      await chmod(path, 0o400);
+      return result;
+    };
+    return descriptor;
+  });
+  syncBuiltinESMExports();
+  try { await reject(path); }
+  finally { raced.mock.restore(); syncBuiltinESMExports(); }
+  assert.equal(flagsSeen, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  await chmod(path, 0o644);
+  const moved = t.mock.method(fs, 'open', async (target, ...args) => {
+    if (target === path) {
+      await fs.rename(path, join(f.root, 'original.json'));
+      await writeFile(path, bytes, { mode: 0o644 });
+    }
+    return realOpen(target, ...args);
+  });
+  syncBuiltinESMExports();
+  try { await reject(path); }
+  finally { moved.mock.restore(); syncBuiltinESMExports(); }
+  for (const value of [Buffer.alloc(0), Buffer.alloc(4 * 1024 * 1024 + 1), Buffer.from([0xff]), Buffer.from('{')]) {
+    await writeFile(path, value);
+    await reject(path);
+  }
+});
+
+test('explicit catalog rejects incompatible Coding Plan rules before spawn or auth consumption', async t => {
+  const makeRule = catalog => catalog.config.providerConfigRules.providerRules[0];
+  const invalid = {
+    'top-level array': () => [],
+    'unsupported schema': catalog => ({ ...catalog, schemaVersion: 2 }),
+    'unsafe revision': catalog => ({ ...catalog, revision: Number.MAX_SAFE_INTEGER + 1 }),
+    'model rules array': catalog => { catalog.config.modelConfigRules = []; },
+    'foreign provider': catalog => { makeRule(catalog).providerId = 'foreign'; },
+    'ambiguous rule': catalog => { catalog.config.providerConfigRules.providerRules.push(makeRule(catalog)); },
+    'foreign access': catalog => { makeRule(catalog).config.access = { ...request.accountAccess, accountType: 'foreign' }; },
+    'empty model IDs': catalog => { makeRule(catalog).config.builtinModelIds = []; },
+    'changed API type': catalog => { makeRule(catalog).config.api.type = 'openai'; },
+    'changed full API URL': catalog => { makeRule(catalog).config.api.baseUrl += '/other'; },
+    'non-HTTPS API URL': catalog => { makeRule(catalog).config.api.baseUrl = 'http://fixture.invalid/coding/plan'; },
+  };
+  for (const [name, alter] of Object.entries(invalid)) {
+    await t.test(name, async t => {
+      const catalog = explicitFixture();
+      const result = await projectedEntrypoint(t, { nonInteractive: true, explicit: JSON.stringify(alter(catalog) ?? catalog) });
+      assert.equal(result.code, 1, result.errors);
+      assert.equal(result.launches, 0);
+      assert.equal(await readFile(result.authPath, 'utf8'), JSON.stringify(projection));
+      assert.match(result.errors, /catalog_invalid/);
+      assert.match(result.transcript, /\x1b\]7501;state=error\x07/);
+      assert.doesNotMatch(result.transcript, /blocked:kind=auth/);
+    });
+  }
+});
+
+test('valid explicit catalog with foreign projected credentials reports blocked auth', async t => {
+  const auth = { ...projection, providerId: 'account:foreign' };
+  const result = await projectedEntrypoint(t, { explicit: JSON.stringify(explicitFixture()), auth, nonInteractive: true });
+  assert.equal(result.code, 1);
+  assert.equal(result.launches, 0);
+  assert.equal(result.authError?.blockedKind, 'auth');
+  assert.equal(await readFile(result.authPath, 'utf8'), JSON.stringify(auth));
+  assert.match(result.transcript, /\x1b\]7501;state=blocked:kind=auth\x07/);
+  assert.doesNotMatch(result.errors, /catalog_invalid/);
+});
+
+test('explicit catalog rejects projected credentials for a bundled non-Coding-Plan provider as blocked auth', async t => {
+  const auth = { ...projection, providerId: 'account:other-connection' };
+  const bundledCatalog = explicitFixture(44);
+  bundledCatalog.config.providerConfigRules.providerRules.push({ providerId: auth.providerId, config: {
+    access: { type: 'api-key' }, api: { type: 'openai', baseUrl: 'https://fixture.invalid/api' }, builtinModelIds: ['fixture-model'],
+  } });
+  const result = await projectedEntrypoint(t, { explicit: JSON.stringify(explicitFixture()), auth, bundledCatalog, nonInteractive: true });
+  assert.equal(result.code, 1);
+  assert.equal(result.launches, 0);
+  assert.equal(result.authError?.blockedKind, 'auth');
+  assert.equal(await readFile(result.authPath, 'utf8'), JSON.stringify(auth));
+  assert.match(result.transcript, /\x1b\]7501;state=blocked:kind=auth\x07/);
+  assert.doesNotMatch(result.transcript, /\x1b\]7501;state=error\x07/);
+  assert.doesNotMatch(result.errors, /catalog_invalid/);
+});
+
+test('BOM-prefixed explicit JSON fails before app-server spawn or auth consumption', async t => {
+  const result = await projectedEntrypoint(t, { explicit: '\uFEFF' + JSON.stringify(explicitFixture()), nonInteractive: true });
+  assert.equal(result.code, 1);
+  assert.equal(result.launches, 0);
+  assert.equal(await readFile(result.authPath, 'utf8'), JSON.stringify(projection));
+  assert.match(result.errors, /catalog_invalid/);
+  assert.match(result.transcript, /\x1b\]7501;state=error\x07/);
+});
+
+test('shared Coding Plan rule validation safely rejects missing catalog shape and non-HTTPS in isolation', () => {
+  const catalog = explicitFixture();
+  const rejected = { code: 'catalog_invalid' };
+  assert.equal(codingPlanRule(catalog).providerId, providerId);
+  assert.throws(() => codingPlanRule(null), rejected);
+  assert.throws(() => codingPlanRule({ config: { providerConfigRules: { providerRules: {} } } }), rejected);
+  assert.throws(() => compatibleCodingPlanRule(catalog, undefined, providerId), rejected);
+  catalog.config.providerConfigRules.providerRules[0].config.api.baseUrl = 'http://fixture.invalid/coding/plan';
+  assert.throws(() => codingPlanRule(catalog, providerId), rejected);
+});
+
+test('projected account reuses the parsed catalog without reopening its effective path', async t => {
+  const f = await fixture(t);
+  const authPath = join(f.root, 'auth.json');
+  const configPath = join(f.root, 'unopened-catalog.json');
+  await writeFile(authPath, JSON.stringify(projection), { mode: 0o600 });
+  const account = await projectedAccount(configPath, authPath, {
+    catalog: explicitFixture(), bundledCatalog: explicitFixture(44), model: 'GLM-5.4',
+  });
+  assert.equal(account.selection.modelId, 'GLM-5.4');
+  assert.equal(account.config.basedOnZCodeBuiltinRevision, `zcode-builtin:48:${digest(configPath)}`);
+  await assert.rejects(access(configPath), { code: 'ENOENT' });
+});
+
+test('in-place explicit catalog recheck withholds spawn after a metadata change', async t => {
+  const result = await projectedEntrypoint(t, { nonInteractive: true, explicit: JSON.stringify(explicitFixture()), changeCatalogBeforeSpawn: true });
+  assert.equal(result.code, 1);
+  assert.equal(result.launches, 0);
+  assert.match(result.errors, /catalog_invalid/);
+  assert.match(result.transcript, /\x1b\]7501;state=error\x07/);
+});
+
+test('explicit catalog binds identical bytes and honors projected model and effort selection', async t => {
+  const explicit = JSON.stringify(explicitFixture(), null, 2) + '\n';
+  const model = ['--model', `${providerId}/GLM-5.4`];
+  const defaultModel = JSON.stringify({ providerId, modelId: 'GLM-5.3', options: { reasoningLevel: 'high' } });
+  const preserve = { TEST_PRESERVE_MODEL: '1', TEST_DEFAULT_MODEL: defaultModel };
+  const effortOnly = { TEST_PRESERVE_MODEL: '1', TEST_DEFAULT_MODEL: JSON.stringify(selected),
+    TEST_CREATE_SCOPE: '{"thoughtLevel":"high"}', TEST_THOUGHT_LEVEL: 'high' };
+  for (const [name, runtimeName, copy, extraArgs, fakeEnv, expected] of [
+    ['Core in place with explicit model and max', 'core', false, [...model, '--reasoning-effort', 'max'], {}, 'GLM-5.4 (reasoning: max)'],
+    ['TUI private copy with only model', 'tui', true, model, {}, 'GLM-5.4 (reasoning: max)'],
+    ['fresh defaults', 'core', true, [], preserve, 'GLM-5.3 (reasoning: high)'],
+    ['effort only', 'core', false, ['--reasoning-effort', 'high'], effortOnly, 'GLM-5.3 (reasoning: high)'],
+  ]) {
+    await t.test(name, async t => {
+      const result = await projectedEntrypoint(t, { explicit, runtimeName, copy, extraArgs, fakeEnv, nonInteractive: runtimeName === 'core' });
+      assert.equal(result.code, 0, result.errors);
+      assert.equal(result.launches, 1);
+      assert.ok(result.transcript.includes(`Selected: ${providerId}/${expected}`));
+      assert.match(result.transcript, /Reply 1/);
+    });
+  }
+});
+
+test('noninteractive projected Core withholds prompts on invalid selection or unreported effort', async t => {
+  const explicit = JSON.stringify(explicitFixture());
+  for (const [name, extraArgs, fakeEnv, launches, diagnostic] of [
+    ['unsupported model', ['--model', 'unsupported-model'], {}, 0, /no fallback model/],
+    ['unsupported effort', ['--model', `${providerId}/GLM-5.4`, '--reasoning-effort', 'unsupported'], {}, 1, /reasoning level is unavailable/],
+    ['unreported effort', ['--reasoning-effort', 'high'], { TEST_PRESERVE_MODEL: '1', TEST_DEFAULT_MODEL: JSON.stringify(selected),
+      TEST_CREATE_SCOPE: '{"thoughtLevel":"high"}', TEST_THOUGHT_LEVEL: 'high', TEST_UNREPORTED_THOUGHT: '1' }, 1, /reasoning level was not confirmed/],
+  ]) {
+    await t.test(name, async t => {
+      const result = await projectedEntrypoint(t, { explicit, extraArgs, fakeEnv, nonInteractive: true });
+      assert.equal(result.code, 1, result.errors);
+      assert.equal(result.launches, launches);
+      assert.equal(result.promptWrites, 0);
+      assert.match(result.errors, diagnostic);
+      assert.match(result.transcript, /\x1b\]7501;state=error\x07/);
+      assert.doesNotMatch(result.transcript, /Reply 1|Selected:|blocked:kind=auth/);
+    });
+  }
+});
+
+test('projected noninteractive Core never sends a prompt after a contradictory or missing reasoning report', async t => {
+  const explicit = JSON.stringify(explicitFixture());
+  const selectedModel = ['--model', `${providerId}/GLM-5.4`, '--reasoning-effort', 'max'];
+  const effortOnly = { TEST_PRESERVE_MODEL: '1', TEST_DEFAULT_MODEL: JSON.stringify(selected),
+    TEST_CREATE_SCOPE: '{"thoughtLevel":"high"}', TEST_THOUGHT_LEVEL: 'high' };
+  for (const [observation, args, env] of [
+    ['rpc-conflict', ['--reasoning-effort', 'high'], effortOnly],
+    ['subscribe-conflict', ['--reasoning-effort', 'high'], effortOnly],
+    ['rpc-conflict', selectedModel, {}],
+    ['subscribe-conflict', selectedModel, {}],
+    ['rpc-missing', selectedModel, {}],
+    ['subscribe-missing', selectedModel, {}],
+  ]) {
+    await t.test(`${observation} with ${args === selectedModel ? 'explicit model' : 'effort only'}`, async t => {
+      const result = await projectedEntrypoint(t, { explicit, nonInteractive: true, extraArgs: args,
+        fakeEnv: { ...env, TEST_PROJECTED_REASONING_OBSERVATION: observation } });
+      assert.equal(result.code, 1, result.errors);
+      assert.equal(result.launches, 1);
+      assert.equal(result.promptWrites, 0);
+      assert.match(result.errors, /Selected reasoning level was not applied/);
+      assert.match(result.transcript, /\x1b\]7501;state=error\x07/);
+      assert.doesNotMatch(result.transcript, /Reply 1|Selected:|blocked:kind=auth/);
+    });
+  }
 });

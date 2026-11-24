@@ -117,6 +117,7 @@ test('core reports startup configuration failure without claiming readiness', as
   const result = await app.result;
   assert.equal(result.code, 1, result.out + '\n' + result.err);
   assert.deepEqual(oscStates(result.out), ['error']);
+  assert.match(result.err, /Selected model unavailable/);
   assert.doesNotMatch(result.out, /session\/close unconfirmed/);
 });
 

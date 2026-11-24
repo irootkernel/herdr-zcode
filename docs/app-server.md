@@ -40,6 +40,7 @@ To install a standalone copy of the checkout:
 | `lib/error-classification.mjs` | Classify failures as quota, rate limit, authentication, permission, or general errors and return safe diagnostics. |
 | `lib/runtime-profile.mjs` | Select the explicit CLI runtime and adapt canonical status to the legacy Herdr reporter. |
 | `lib/desktop-runtime.mjs` | Resolve the installed Electron runtime, prepare a temporary public provider catalog, and isolate the child environment. |
+| `lib/desktop-catalog.mjs` | Validate explicit provider catalog files and compare their Coding Plan API rules with the trusted bundle. |
 | `lib/desktop-account.mjs` | Load Desktop or projected credentials and share the account overlay, model validation, authentication responses, and stream redaction. |
 | `lib/desktop-keychain.mjs` | Verify the ZCode signer and read Keychain-backed Desktop credentials on Apple Silicon macOS. |
 | `lib/herdr-reporter.mjs` | Send asynchronous status reports for one wrapper's server socket and pane. |
@@ -76,9 +77,13 @@ Do not write Desktop credentials, workspace model defaults, or personal provider
 }
 ```
 
-The wrapper validates the file and provider against the bundled catalog. Only matching app-server authentication requests can use the in-memory key, and the same redactor protects streamed output in both account modes. `--consume-auth-file` requires `--auth-file`. It overwrites a writable file through its validated open descriptor before unlinking it. A read-only file can be unlinked without being overwritten. Any consumption error stops startup before the app-server spawns.
+The wrapper validates the credential file and selects the provider from the bundled catalog by default. Only matching app-server authentication requests can use the in-memory key, and the same redactor protects streamed output in both account modes. `--consume-auth-file` requires `--auth-file`. It overwrites a writable file through its validated open descriptor before unlinking it. A read-only file can be unlinked without being overwritten. Any consumption error stops startup before the app-server spawns. The caller owns any credential file left behind by a failure before consumption.
 
-Projected mode uses a private temporary app state directory and a personal catalog path inside it. It does not read the native Desktop account or construct a Keychain reader. The child inherits the caller's `TMPDIR`, while its home and ZCode data locations point to the private state directory. `--no-copy-catalog` keeps the bundled catalog at its original path and still creates the disposable app state. The wrapper removes that state after the app-server exits or a startup failure stops the launch.
+Projected mode uses a private temporary app state directory and a personal catalog path inside it. The child inherits the caller's `TMPDIR`, while its home and ZCode data locations point to the private state directory. The wrapper removes that state after the app-server exits or a startup failure stops the launch. Native Desktop account and Keychain state are outside the projected session.
+
+`--catalog-file <path>` selects an explicit catalog for `--auth-file` in either runtime, including with `--skip-desktop-inspect`. Relative paths resolve against `--cwd`. Use a single-linked regular file from 1 byte through 4 MiB, owned by the invoking user, with group and other write bits clear. Mode `0644` is valid. The strict UTF-8 JSON must declare schema version 1, a positive revision, model rules, and one valid Coding Plan rule for the projected provider. Its API type and full HTTPS base URL must match the bundled provider rule exactly. An invalid explicit catalog stops launch with `catalog_invalid`. Noninteractive Core reports that diagnostic as `error`.
+
+The account overlay uses the parsed catalog and binds its revision to the same absolute path used by the app-server. By default the wrapper writes the validated bytes to the private runtime directory. With `--no-copy-catalog`, it checks the original path and file metadata again before spawn. Keep that input and its path stable for the lifetime of the app-server. When a fresh projected session omits the model and effort, ZCode supplies both defaults. An effort-only request retains the server-selected model. Noninteractive Core stops before delivering a prompt when the requested effort conflicts with a report or neither the configuration RPC nor the subscription confirms it.
 
 ## Input and interaction contract
 
