@@ -1,10 +1,179 @@
 #!/bin/sh
 set -eu
-entry=$0
-while [ -L "$entry" ]; do
-  base=$(CDPATH= cd -- "$(dirname -- "$entry")" && pwd -P)
-  target=$(readlink "$entry")
-  case "$target" in /*) entry=$target ;; *) entry=$base/$target ;; esac
+resolve_package_root() {
+  entry=$0
+  while [ -L "$entry" ]; do
+    entry_dir=$(dirname -- "$entry") || return 1
+    base=$(CDPATH= cd -- "$entry_dir" && pwd -P) || return 1
+    target=$(readlink "$entry") || return 1
+    case "$target" in /*) entry=$target ;; *) entry=$base/$target ;; esac
+  done
+  entry_dir=$(dirname -- "$entry") || return 1
+  root=$(CDPATH= cd -- "$entry_dir/.." && pwd -P)
+}
+if [ "${1:-}" = prepare-isolated ]; then
+  prepare_bootstrap_failed() {
+    trap '' INT TERM HUP
+    printf '%s\n' '{"reason":"embedded_runtime_invalid","message":"ZCode Desktop embedded runtime is unavailable or incompatible."}'
+    exit 1
+  }
+  prepare_interrupted() {
+    trap '' INT TERM HUP
+    printf '%s\n' '{"reason":"preparation_interrupted","message":"Input preparation was interrupted."}'
+    exit 1
+  }
+  trap 'prepare_interrupted' INT TERM HUP
+  unset PERL5OPT PERL5LIB PERLLIB PERL_UNICODE PERL5DB PERL5DB_CMD PERL_USE_UNSAFE_INC
+  prepare_started=$(/usr/bin/perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC_RAW -e 'printf "%d", clock_gettime(CLOCK_MONOTONIC_RAW) * 1000' 2>/dev/null) || prepare_bootstrap_failed
+  case "$prepare_started" in ''|*[!0-9]*) prepare_bootstrap_failed ;; esac
+  resolve_package_root 2>/dev/null || prepare_bootstrap_failed
+  bootstrap=$root/scripts/desktop-bootstrap.pl
+  [ -f "$bootstrap" ] && [ -r "$bootstrap" ] && [ -x /usr/bin/perl ] || prepare_bootstrap_failed
+  # Open the packaged helper on the guarded shell call before replacing it.
+  run_preparation_bootstrap() {
+    # Darwin /bin/sh is Bash. Keep exec errors in this shell long enough to
+    # emit the structured response rather than letting the builtin exit.
+    shopt -s execfail && command exec /usr/bin/perl /dev/fd/3 "$root" "$prepare_started" "$@"
+  }
+  run_preparation_bootstrap "$@" 2>/dev/null 3< "$bootstrap" || prepare_bootstrap_failed
+fi
+for arg do
+  if [ "$arg" = --check-desktop ]; then
+    unset PERL5OPT PERL5LIB PERLLIB PERL_UNICODE PERL5DB PERL5DB_CMD PERL_USE_UNSAFE_INC
+    run_desktop_bootstrap() {
+      shopt -s execfail && command exec /usr/bin/perl /dev/fd/3 "$root" '' "$@"
+    }
+    root=
+    if resolve_package_root 2>/dev/null; then
+      bootstrap=$root/scripts/desktop-bootstrap.pl
+      if [ -f "$bootstrap" ] && [ -s "$bootstrap" ] && [ -r "$bootstrap" ]; then
+        run_desktop_bootstrap "$@" 2>/dev/null 3< "$bootstrap" || :
+      fi
+    fi
+    # The bundled helper may be unavailable. Report metadata the system can
+    # still read, without trying to start the embedded runtime.
+    exec /usr/bin/perl - "$root" "$@" 2>/dev/null <<'PERL'
+use strict;
+use Cwd qw(getcwd);
+use Encode qw(decode);
+use Errno qw(ENOENT);
+use JSON::PP qw(encode_json);
+my ($root, @args) = @ARGV;
+my $bundle = $ENV{HERDR_ZCODE_APP_BUNDLE} // '';
+$bundle = '/Applications/ZCode.app' unless length $bundle;
+my ($check, $json, $bundle_arg, $invalid) = (0, 0, 0, 0);
+for (my $i = 0; $i < @args; $i++) {
+    my $arg = $args[$i];
+    if ($arg eq '--check-desktop' && !$check) { $check = 1; }
+    elsif ($arg eq '--json' && !$json) { $json = 1; }
+    elsif ($arg eq '--app-bundle' && defined $args[$i + 1] && $args[$i + 1] ne '' && $args[$i + 1] !~ /\A--/) {
+        $bundle = $args[++$i];
+        $invalid ||= $bundle_arg;
+        $bundle_arg = 1;
+    } else { $invalid = 1; }
+}
+$bundle = getcwd() . '/' . $bundle unless $bundle =~ m{\A/};
+my @parts;
+for my $part (split '/', $bundle) {
+    next if $part eq '' || $part eq '.';
+    if ($part eq '..') { pop @parts; } else { push @parts, $part; }
+}
+$bundle = '/' . join('/', @parts);
+my @pins;
+if ($root ne '' && open(my $pins, '<', "$root/toolchains.env")) {
+    @pins = map { chomp; substr($_, length('ZCODE_APP_MIN_VERSION=')) } grep { /\AZCODE_APP_MIN_VERSION=/ } <$pins>;
+}
+my $minimum = @pins == 1 && $pins[0] =~ /\A[0-9]+\.[0-9]+\.[0-9]+\z/ ? $pins[0] : undef;
+sub plist_string {
+    my ($field) = @_;
+    my $path = "$bundle/Contents/Info.plist";
+    return unless -f $path && open(my $plist, '-|', '/usr/bin/plutil', '-extract', $field, 'raw', '-expect', 'string', '-o', '-', $path);
+    my $count = read($plist, my $value, 65537);
+    return unless close($plist) && defined $count && $count <= 65536;
+    $value =~ s/\A\s+|\s+\z//g;
+    return $value;
+}
+sub version_below {
+    my ($app, $minimum) = @_;
+    my @actual = split /\./, $app;
+    my @required = split /\./, $minimum;
+    for my $i (0 .. 2) {
+        for ($actual[$i], $required[$i]) { s/\A0+(?=\d)//; }
+        my $order = (length($actual[$i]) <=> length($required[$i])) || ($actual[$i] cmp $required[$i]);
+        return $order < 0 if $order;
+    }
+    return 0;
+}
+my $app = plist_string('CFBundleShortVersionString');
+$app = undef if defined $app && $app !~ /\A[0-9]+\.[0-9]+\.[0-9]+\z/;
+my $reason = 'embedded_runtime_invalid';
+if ($invalid || !$check || !$json) {
+    $reason = 'invalid_arguments';
+} elsif (!stat $bundle) {
+    $reason = $! == ENOENT ? 'app_bundle_missing' : 'app_bundle_invalid';
+} else {
+    my $build = plist_string('CFBundleVersion');
+    my $executable = "$bundle/Contents/MacOS/ZCode";
+    my $launcher = "$bundle/Contents/Resources/glm/zcode.cjs";
+    my $catalog = "$bundle/Contents/Resources/config/provider/zcode-builtin.json";
+    if (!(-d $bundle && defined $app && defined $build && length $build && -f $executable && -x _ && -s _ &&
+            -f $launcher && -r _ && -s _ && -f $catalog && -r _ && -s _ && -s _ <= 4 * 1024 * 1024)) {
+        $reason = 'app_bundle_invalid';
+    } elsif (defined $minimum && version_below($app, $minimum)) {
+        $reason = 'app_version_below_minimum';
+    }
+}
+my %messages = (
+    invalid_arguments => 'Use --check-desktop --json with an optional --app-bundle path.',
+    app_bundle_missing => 'ZCode Desktop bundle is missing.',
+    app_bundle_invalid => 'ZCode Desktop bundle has missing or invalid required metadata or files.',
+    app_version_below_minimum => 'ZCode Desktop version is below the required minimum.',
+    embedded_runtime_invalid => 'ZCode Desktop embedded runtime is unavailable or incompatible.',
+);
+print encode_json({ compatible => JSON::PP::false, reason => $reason, message => $messages{$reason},
+    appVersion => $app, minZcodeAppVersion => $minimum,
+    appBundle => decode('UTF-8', $bundle) }), "\n";
+exit 1;
+PERL
+  fi
 done
-root=$(CDPATH= cd -- "$(dirname -- "$entry")/.." && pwd -P)
-exec "$root/scripts/toolchain.sh" run "$@"
+resolve_package_root
+fail() { printf 'herdr-zcode: %s\n' "$*" >&2; exit 1; }
+[ -f "$root/toolchains.env" ] || fail 'Missing toolchains.env'
+pinned_node_version=
+while IFS='=' read -r key value || [ -n "$key" ]; do
+  [ "$key" = NODE_VERSION ] || continue
+  [ -z "$pinned_node_version" ] || fail 'Duplicate toolchain key: NODE_VERSION'
+  case "$value" in
+    ''|*[!0-9.]*|.*|*.|*..*|*.*.*.*) fail 'Invalid version for NODE_VERSION' ;;
+    *.*.*) pinned_node_version=$value ;;
+    *) fail 'Invalid version for NODE_VERSION' ;;
+  esac
+done < "$root/toolchains.env"
+[ -n "$pinned_node_version" ] || fail 'Missing toolchain key: NODE_VERSION'
+nvm_root=${NVM_DIR:-${HOME:+$HOME/.nvm}}
+if [ -n "$nvm_root" ]; then
+  node_bin=$nvm_root/versions/node/v$pinned_node_version/bin/node
+  if [ -f "$node_bin" ] && [ -x "$node_bin" ]; then
+    exec "$root/scripts/toolchain.sh" run "$@"
+  fi
+fi
+
+app_bundle=${HERDR_ZCODE_APP_BUNDLE:-/Applications/ZCode.app}
+expect_bundle=0
+for arg do
+  if [ "$expect_bundle" = 1 ]; then
+    case "$arg" in ''|--*) fail 'Invalid command arguments' ;; esac
+    app_bundle=$arg
+    expect_bundle=0
+  elif [ "$arg" = --app-bundle ]; then
+    expect_bundle=1
+  fi
+done
+[ "$expect_bundle" = 0 ] || fail 'Invalid command arguments'
+case "$app_bundle" in /*) ;; *) app_bundle=$(pwd -P)/$app_bundle ;; esac
+executable=$app_bundle/Contents/MacOS/ZCode
+[ -f "$executable" ] && [ -x "$executable" ] || fail "Node $pinned_node_version is unavailable through nvm and no ZCode executable was found at $executable"
+unset NODE_OPTIONS NODE_PATH
+export ELECTRON_RUN_AS_NODE=1
+exec "$executable" "$root/bin/herdr-zcode-app.mjs" "$@"

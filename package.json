@@ -1,6 +1,6 @@
 {
   "name": "herdr-zcode",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "license": "UNLICENSED",
   "description": "Thin ZCode app-server terminal executor for Herdr",
@@ -11,6 +11,7 @@
   "files": [
     "bin/herdr-zcode",
     "scripts/toolchain.sh",
+    "scripts/desktop-bootstrap.pl",
     "scripts/dev.mjs",
     "scripts/check-toolchain.mjs",
     "scripts/tool-bin/npm",
@@ -20,9 +21,14 @@
     "bin/herdr-zcode-app.mjs",
     "lib/app-server-client.mjs",
     "lib/app-server-controller.mjs",
+    "lib/error-classification.mjs",
+    "lib/runtime-profile.mjs",
+    "lib/osc7501-reporter.mjs",
     "lib/desktop-account.mjs",
+    "lib/desktop-catalog.mjs",
     "lib/desktop-keychain.mjs",
     "lib/desktop-runtime.mjs",
+    "lib/prepare-isolated.mjs",
     "lib/herdr-reporter.mjs",
     "README.md",
     "HERDR.md",
@@ -38,6 +44,7 @@
     "test": "node scripts/check-toolchain.mjs && node --test tests/*.test.mjs",
     "test:live-account": "node scripts/check-toolchain.mjs && node tests/live-account.mjs --authorize-live",
     "test:live-herdr": "node scripts/check-toolchain.mjs && node tests/live-herdr-app.mjs --authorize-live",
+    "test:live-herdr-core": "node scripts/check-toolchain.mjs && node tests/live-herdr-core.mjs --authorize-live",
     "test:live-reporter": "node scripts/check-toolchain.mjs && node tests/live-herdr-reporter.mjs --authorize-herdr"
   }
 }

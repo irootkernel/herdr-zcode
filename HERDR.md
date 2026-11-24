@@ -25,13 +25,13 @@ If caller verification fails, follow the shared skill's `dev-herdr --identify-ca
 
 ## Model and reasoning level
 
-The default model is `account:zai-individual-coding-plan/GLM-5.3`. To request the `max` reasoning level explicitly, run:
+Omit `--model` to use the model and effort ZCode selects for the session. To request GLM-5.4 at `max` effort explicitly, run:
 
 ```sh
-herdr-zcode --cwd /path/to/project --model 'account:zai-individual-coding-plan/GLM-5.3$max'
+herdr-zcode --cwd /path/to/project --model 'account:zai-individual-coding-plan/GLM-5.4$max'
 ```
 
-Keep the model reference in single quotes so the shell passes `$max` literally. Without a `$level` suffix, the model's advertised default applies; GLM-5.3 defaults to `max`. Check the startup line for the selected model and reasoning level. See the [README](README.md#choosing-a-model-and-reasoning-level) for details.
+Keep the model reference in single quotes so the shell passes `$max` literally. An explicit model without a suffix uses the model's advertised default effort. Check the startup line for the selected model and effort. See the [README](README.md#choosing-a-model-and-reasoning-level) for details.
 
 ## Start an executor and send a task
 
@@ -99,3 +99,15 @@ Each wrapper owns its app-server, session, interactions, and reporter. Reports a
 Task assignments must state the goal, allowed files, preservation requirements, completion criteria, and validation. Result reports must identify changes, checks actually run, and remaining issues. A completion claim or successful exit code alone does not establish correctness; the evaluator checks the actual changes and evidence.
 
 Each coordinator tracks its executors and file ownership. Separate panes do not isolate changes to the same files; agree on ownership or use separate worktrees. Read result reports and questions first; use a short recent-output view for progress and detailed logs when investigating a problem. Close only helpers whose results have been read and which will not be reused. Preserve shared tabs with active helpers and existing user sessions.
+
+## herdr-core 0.1.20
+
+Start the installed command as an executable with `hc run` and select `--runtime core --non-interactive`. Set the working directory, allowed tools, and additional directories to the task's authorized scope. Use a disposable projected credential with `--auth-file <path> --consume-auth-file` when supplying a Coding Plan account for isolated automation.
+
+Supply `--catalog-file <path>` when the projected session needs a compatible catalog with models beyond the bundled list. If you also pass `--no-copy-catalog`, keep the file and its path stable until the app-server exits. An explicit reasoning effort must be confirmed before noninteractive Core sends a prompt.
+
+For isolated automation, run `prepare-isolated --out-dir <private-directory>` on the trusted host as the Desktop user before starting the Core terminal. Give the terminal only the disposable `authFile` and `catalogFile` from the receipt. Send the prompt after Core reports `idle` and the caller verifies that `--consume-auth-file` removed the projected credential. Keep the account identity hash out of general-purpose logs. The caller owns cleanup after forced termination or a failure before credential consumption.
+
+Read the assigned terminal with `hc get --json <terminal>`. Wait for `reported: true` and `status.state: idle` before delivering a task. Use `hc send --if idle --wait <terminal> <prompt>` to guard delivery. A completed turn reports `done` and advances the turn counter. Check the result artifacts before accepting the work. A `blocked` or `error` state needs investigation.
+
+Use `hc kill <terminal>` to stop a terminal you own. Core keeps its app-server in the terminal's process group and takes the fast teardown path on hangup or termination. The [live Core test](docs/app-server.md#live-herdr-core-certification) uses its own daemon and checks that both processes are gone.

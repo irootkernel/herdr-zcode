@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
@@ -10,7 +10,11 @@ import { offlineAdapters } from './fixtures/app-server-entry.mjs';
 
 const entry = fileURLToPath(new URL('./fixtures/app-server-entry.mjs', import.meta.url));
 function launch(scenario = 'normal', args = [], options = {}) {
-  const child = spawn(process.execPath, [entry, ...args], { env: { ...process.env, TEST_SCENARIO: scenario }, stdio: ['pipe', 'pipe', 'pipe'], ...options });
+  const { env, ...spawnOptions } = options;
+  const child = spawn(process.execPath, [entry, ...args], { env: { ...process.env, TEST_SCENARIO: scenario,
+    TEST_AUTO_RESOLVE_QUESTIONS: args.includes('--non-interactive') || args.includes('--auto-resolve-questions') ? '1' : '0',
+    TEST_PRESERVE_MODEL: args.includes('--model') ? '0' : '1',
+    ...env }, stdio: ['pipe', 'pipe', 'pipe'], ...spawnOptions });
   let out = '', err = '';
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   child.stdout.on('data', chunk => { out += chunk; });
@@ -32,6 +36,7 @@ function launch(scenario = 'normal', args = [], options = {}) {
         if (Date.now() > deadline || child.exitCode !== null) throw new Error(`Missing ${needle}\n${out}\n${err}`);
         await new Promise(resolve => setTimeout(resolve, 5));
       }
+      return { out, err };
     },
   };
 }
@@ -52,6 +57,113 @@ test('real entrypoint captures early piped prompts/EOF, bootstraps, renders two 
   assert.doesNotMatch(result.out, /first prompt|second prompt|"content"/);
   assert.match(result.err, /report idle/);
 });
+
+const oscStates = text => [...text.matchAll(/\x1b\]7501;state=([^\x07]+)\x07/g)].map(match => match[1]);
+
+test('core entrypoint reports idle, working and done, with normal EOF closing the session', async () => {
+  const app = launch('normal', ['--runtime', 'core']);
+  app.child.stdin.end('first prompt\n');
+  const result = await app.result;
+  assert.equal(result.code, 0, result.out + '\n' + result.err);
+  assert.match(result.out, /Reply 1/);
+  assert.deepEqual(oscStates(result.out), ['idle', 'working', 'done']);
+  assert.ok(result.out.indexOf('ZCode session:') < result.out.indexOf('\x1b]7501;state=idle'));
+  assert.ok(result.out.indexOf('Reply 1') < result.out.indexOf('\x1b]7501;state=done'));
+  assert.doesNotMatch(result.out, /session\/close unconfirmed/);
+  assert.match(result.err, /\[child exited\]/);
+  assert.doesNotMatch(result.err, /\[report(?: |er released)/);
+});
+
+for (const [scenario, outcome] of [
+  ['quota', 'blocked:kind=quota'], ['rpc-quota', 'blocked:kind=quota'],
+  ['rate-limit', 'blocked:kind=rate_limit'], ['turn-auth', 'blocked:kind=auth'],
+  ['error-result', 'error'], ['failure', 'error'],
+]) {
+  test(`core reports ${scenario} as ${outcome} without returning to idle`, async () => {
+    const app = launch(scenario, ['--runtime', 'core']);
+    app.child.stdin.end('run\n');
+    const result = await app.result;
+    assert.equal(result.code, 1, result.out + '\n' + result.err);
+    assert.deepEqual(oscStates(result.out), ['idle', 'working', outcome]);
+    assert.doesNotMatch(result.out + result.err, /header-secret|private provider failure|PRIVATE STACK/);
+  });
+}
+
+test('core startup authentication is observable before a supervisor stops the blocked wrapper', { skip: process.platform === 'win32' }, async () => {
+  const app = launch('startup-auth', ['--runtime', 'core', '--non-interactive']);
+  const { out } = await app.wait('\x1b]7501;state=blocked:kind=auth\x07');
+  assert.equal(app.child.exitCode, null);
+  assert.deepEqual(oscStates(out), ['blocked:kind=auth']);
+  assert.ok(app.child.kill('SIGHUP'));
+  const result = await app.result;
+  assert.equal(result.code, 129, result.out + '\n' + result.err);
+  assert.deepEqual(oscStates(result.out), ['blocked:kind=auth']);
+  assert.doesNotMatch(result.out + result.err, /header-secret|auth body/);
+});
+
+test('core SIGINT releases a startup auth block with a provisional turn', { skip: process.platform === 'win32' }, async () => {
+  const app = launch('startup-auth-with-provisional-turn', ['--runtime', 'core', '--non-interactive', '--model', 'account:zai-individual-coding-plan/GLM-5.3']);
+  await app.wait('\x1b]7501;state=blocked:kind=auth\x07');
+  assert.ok(app.child.kill('SIGINT'));
+  const result = await app.result;
+  assert.equal(result.code, 130, result.out + '\n' + result.err);
+  assert.deepEqual(oscStates(result.out), ['blocked:kind=auth']);
+  assert.doesNotMatch(result.out, /session\/close unconfirmed/);
+});
+
+test('core reports startup configuration failure without claiming readiness', async () => {
+  const app = launch('missing-model', ['--runtime', 'core', '--non-interactive', '--model', 'account:zai-individual-coding-plan/GLM-5.3']);
+  app.child.stdin.end('never submitted\n');
+  const result = await app.result;
+  assert.equal(result.code, 1, result.out + '\n' + result.err);
+  assert.deepEqual(oscStates(result.out), ['error']);
+  assert.match(result.err, /Selected model unavailable/);
+  assert.doesNotMatch(result.out, /session\/close unconfirmed/);
+});
+
+test('core withholds provisional startup permissions until subscription reconciles them', async () => {
+  const app = launch('snapshot-permission-reconciled', ['--runtime', 'core']);
+  await app.wait('Type /help');
+  app.child.stdin.end('prompt\n');
+  const result = await app.result;
+  assert.equal(result.code, 0, result.out + '\n' + result.err);
+  assert.deepEqual(oscStates(result.out), ['idle', 'working', 'done']);
+});
+
+for (const [signal, code, scenario] of [['SIGHUP', 129, 'hang-cleanup'], ['SIGTERM', 143, 'hang-bootstrap']]) {
+  test(`core ${signal} reaps a stubborn child in under 100ms during ${scenario}`, { skip: process.platform === 'win32' }, async t => {
+    const app = launch(scenario, ['--runtime', 'core'], { detached: true,
+      env: { ...process.env, TEST_SCENARIO: scenario, TEST_CAPTURE_CHILD_SCOPE: '1' } });
+    const groupPid = app.child.pid;
+    let reaped = false;
+    t.after(() => {
+      // This test created a private group so cleanup cannot target the runner.
+      if (reaped) return;
+      try { process.kill(-groupPid, 'SIGKILL'); }
+      catch (error) { if (error.code !== 'ESRCH') throw error; }
+    });
+    if (scenario === 'hang-cleanup') app.send('hang');
+    const { err } = await app.wait(scenario === 'hang-cleanup' ? 'Type /help' : '[child runtime headers requested]');
+    const childPid = Number(/\[child pid (\d+)\]/.exec(err)?.[1]);
+    assert.ok(childPid > 1);
+    const sessionColumn = process.platform === 'darwin' ? 'sess=' : 'sid=';
+    const scope = pid => execFileSync('/bin/ps', ['-o', 'pgid=', '-o', sessionColumn, '-p', String(pid)], { encoding: 'utf8' }).trim();
+    assert.equal(scope(childPid), scope(groupPid));
+    assert.equal(Number(scope(groupPid).split(/\s+/)[0]), groupPid);
+    const started = performance.now();
+    assert.ok(app.child.kill(signal));
+    const result = await app.result;
+    assert.throws(() => process.kill(childPid, 0), { code: 'ESRCH' });
+    assert.throws(() => process.kill(groupPid, 0), { code: 'ESRCH' });
+    reaped = true;
+    const elapsed = performance.now() - started;
+    t.diagnostic(`${signal} from send to wrapper and child ESRCH: ${elapsed.toFixed(1)}ms`);
+    assert.ok(elapsed < 100, `${signal} took ${elapsed.toFixed(1)}ms to reap owned processes`);
+    assert.equal(result.code, code, result.out + '\n' + result.err);
+    assert.match(result.err, /\[child status SIGKILL\]/);
+    assert.doesNotMatch(result.out + result.err, /session\/(?:stop|close) unconfirmed|exit not observed/);
+  });
+}
 
 test('permission allow/deny, simultaneous requests and reannouncement remain responsive during a turn', async () => {
   const app = launch('permissions'); app.send('permissions');
@@ -156,7 +268,8 @@ test('stop/close timeouts are bounded, force child exit and do not claim cancell
 });
 
 test('exact catalog model is required; startup failure closes the created session', async () => {
-  const app = launch('missing-model'); app.child.stdin.end('never submitted\n');
+  const app = launch('missing-model', ['--model', 'account:zai-individual-coding-plan/GLM-5.3']);
+  app.child.stdin.end('never submitted\n');
   const result = await app.result; clean(result, 1);
   assert.match(result.err, /selected model and catalog compatibility/);
   assert.doesNotMatch(result.out, /turn completed/);
@@ -197,6 +310,209 @@ test('a $level suffix on --model overrides the advertised default reasoning leve
   const result = await app.result; clean(result);
   assert.match(result.out, /Selected: account:zai-individual-coding-plan\/GLM-5\.3 \(reasoning: high\)/);
   assert.match(result.out, /Reply 1/);
+});
+
+test('session scope parsing distinguishes omitted and empty lists and rejects incompatible flags', () => {
+  assert.deepEqual(parseArgs([]).sessionScope, {});
+  assert.deepEqual(parseArgs(['--tool-allowlist', '', '--tool-denylist', '']).sessionScope, { toolAllowlist: [], toolDenylist: [] });
+  assert.equal(parseArgs(['--non-interactive']).interactionPolicy, 'block');
+  assert.equal(parseArgs(['--thought-level', 'high']).reasoning, 'high');
+  assert.equal(parseArgs(['--model', 'GLM-5.3$high', '--reasoning-effort', 'high']).reasoning, 'high');
+  for (const args of [
+    ['--tool-allowlist', 'Read,,Write'], ['--tool-denylist', '   '], ['--tool-allowlist', '--disable-mcp'],
+    ['--non-interactive', '--interaction-policy', 'interactive'], ['--interaction-policy', 'allow'],
+    ['--persistence', 'later'], ['--reasoning-effort', ' '], ['--reasoning-effort', ''],
+    ['--resume', 's', '--tool-allowlist', ''], ['--resume', 's', '--disable-mcp'],
+    ['--model', 'GLM-5.3$low', '--reasoning-effort', 'high'],
+  ]) assert.throws(() => parseArgs(args), args.join(' '));
+  assert.throws(() => parseArgs(['--model', 'GLM-5.3$low', '--reasoning-effort', 'high']), /Conflicting reasoning effort values/);
+  const supported = Array.from({ length: 256 }, () => ['--additional-dir', 'inputs']).flat();
+  assert.equal(parseArgs(supported).sessionScope.additionalDirectories.length, 256);
+  assert.throws(() => parseArgs([...supported, '--additional-dir', 'outputs']), /at most 256/);
+  assert.throws(() => parseArgs(['--additional-dir', 'bad\0path']), /NUL character/);
+  assert.deepEqual(parseArgs(['--cwd', '/tmp', '--additional-dir', '  ']).sessionScope.additionalDirectories, ['/tmp/  ']);
+});
+
+for (const allowlist of ['', 'Read,Grep,Glob,Write', 'Read,Bash,Write', 'Read,Write']) {
+  test(`session scoping sends the exact ${allowlist || 'empty'} allowlist and selected create flags`, async () => {
+    const scope = { toolAllowlist: allowlist ? allowlist.split(',') : [], toolDenylist: allowlist ? ['Edit', 'Agent'] : [],
+      mcpServers: [], titleGenerationEnabled: false, offPeakToolEnabled: false, dynamicWorkflowEnabled: false,
+      additionalDirectories: ['/tmp/inputs', '/tmp/outputs'], persistence: 'deferred' };
+    const app = launch('normal', ['--mode', 'yolo', '--tool-allowlist', allowlist, '--tool-denylist', allowlist ? 'Edit, Agent' : '',
+      '--disable-mcp', '--disable-title-gen', '--disable-offpeak', '--disable-dynamic-workflow',
+      '--additional-dir', 'inputs', '--additional-dir', 'outputs', '--cwd', '/tmp', '--persistence', 'deferred',
+      '--auto-resolve-questions'], { env: { TEST_CREATE_SCOPE: JSON.stringify(scope) } });
+    app.child.stdin.end('scope fixture\n');
+    const result = await app.result; clean(result);
+    assert.match(result.out, /Reply 1/);
+  });
+}
+
+for (const mode of ['--non-interactive', '--preserve-default-model']) {
+  test(`${mode} preserves the server model and applies reasoning without session/setModel`, async () => {
+    const app = launch('normal', [mode, '--thought-level', 'high'], { env: {
+      TEST_CREATE_SCOPE: '{"thoughtLevel":"high"}', TEST_THOUGHT_LEVEL: 'high',
+    } });
+    app.child.stdin.end('reasoning\n');
+    const result = await app.result; clean(result);
+    assert.match(result.out, /Selected: server-default\/native-default \(reasoning: high\)/);
+    assert.match(result.out, /Reply 1/);
+  });
+}
+
+test('interactive effort hints at creation and applies to the native TUI model', async () => {
+  const app = launch('normal', ['--reasoning-effort', 'high'], { env: {
+    TEST_CREATE_SCOPE: '{"thoughtLevel":"high"}', TEST_THOUGHT_LEVEL: 'high',
+  } });
+  app.child.stdin.end('interactive effort\n');
+  const result = await app.result; clean(result);
+  assert.match(result.out, /Selected: server-default\/native-default \(reasoning: high\)/);
+  assert.match(result.out, /Reply 1/);
+});
+
+for (const runtime of ['tui', 'core']) {
+  test(`${runtime} keeps the native model and effort when --model is omitted`, async () => {
+    const app = launch('normal', ['--runtime', runtime], { env: {
+      TEST_DEFAULT_MODEL: JSON.stringify({ providerId: 'account:zai-individual-coding-plan',
+        modelId: 'GLM-5.4', options: { reasoningLevel: 'high' } }),
+    } });
+    app.child.stdin.end('native model\n');
+    const result = await app.result;
+    if (runtime === 'tui') clean(result);
+    else {
+      assert.equal(result.code, 0, result.out + '\n' + result.err);
+      assert.deepEqual(oscStates(result.out), ['idle', 'working', 'done']);
+    }
+    assert.match(result.out, /Selected: account:zai-individual-coding-plan\/GLM-5\.4 \(reasoning: high\)/);
+    assert.match(result.out, /Reply 1/);
+  });
+}
+
+test('noninteractive reasoning with an explicit model verifies its model options', async () => {
+  const app = launch('normal', ['--non-interactive', '--model', 'account:zai-individual-coding-plan/GLM-5.4',
+    '--reasoning-effort', 'max'], { env: { TEST_REASONING: 'max' } });
+  app.child.stdin.end('explicit model\n');
+  const result = await app.result; clean(result);
+  assert.match(result.out, /Selected: account:zai-individual-coding-plan\/GLM-5\.4 \(reasoning: max\)/);
+  assert.match(result.out, /Reply 1/);
+});
+
+for (const scenario of ['reasoning-response-mismatch', 'reasoning-subscribe-mismatch', 'explicit-reasoning-mismatch', 'explicit-reasoning-subscribe-mismatch']) {
+  test(`rejects ${scenario} before sending a prompt`, async () => {
+    const explicit = scenario.startsWith('explicit');
+    const app = launch(scenario, ['--non-interactive', '--reasoning-effort', 'high',
+      ...(explicit ? ['--model', 'account:zai-individual-coding-plan/GLM-5.3'] : [])], { env: explicit ? { TEST_REASONING: 'high' }
+      : { TEST_CREATE_SCOPE: '{"thoughtLevel":"high"}', TEST_THOUGHT_LEVEL: 'high' } });
+    app.child.stdin.end('never run\n');
+    const result = await app.result; clean(result, 1);
+    assert.match(result.err, /Selected reasoning level was not applied/);
+    assert.doesNotMatch(result.out, /Reply 1|Selected:/);
+  });
+}
+
+test('an omitted optional independent effort report is not presented as verified', async () => {
+  const app = launch('reasoning-unreported', ['--non-interactive', '--reasoning-effort', 'high'], { env: {
+    TEST_CREATE_SCOPE: '{"thoughtLevel":"high"}', TEST_THOUGHT_LEVEL: 'high',
+  } });
+  app.child.stdin.end('unreported\n');
+  const result = await app.result; clean(result);
+  assert.match(result.out, /^Selected: server-default\/native-default$/m);
+  assert.doesNotMatch(result.out, /reasoning: high/);
+});
+
+test('noninteractive startup block survives rejection of the in-flight setup RPC', async () => {
+  const app = launch('startup-block-before-rejection', ['--runtime', 'core', '--non-interactive', '--reasoning-effort', 'high'], {
+    env: { TEST_CREATE_SCOPE: '{"thoughtLevel":"high"}', TEST_THOUGHT_LEVEL: 'high' },
+  });
+  app.child.stdin.end('never dispatch\n');
+  const result = await app.result;
+  assert.equal(result.code, 1, result.out + '\n' + result.err);
+  assert.deepEqual(oscStates(result.out), ['blocked:kind=question']);
+  assert.doesNotMatch(result.out + result.err, /fixture question|turn completed|unconfirmed|Selected:/);
+});
+
+for (const kind of ['permission', 'question']) {
+  for (const policy of ['deny', 'block']) {
+    test(`noninteractive ${policy} responds to ${kind} after piped EOF`, async () => {
+      const app = launch(`automation-${kind}`, ['--runtime', 'core', '--non-interactive',
+        ...(policy === 'deny' ? ['--interaction-policy', 'deny'] : [])]);
+      app.child.stdin.end(policy === 'block' ? 'one prompt\nnever dispatch\n' : 'one prompt\n');
+      const result = await app.result;
+      assert.equal(result.code, policy === 'deny' ? 0 : 1, result.out + '\n' + result.err);
+      assert.deepEqual(oscStates(result.out), ['idle', 'working', policy === 'deny' ? 'done' : `blocked:kind=${kind}`]);
+      assert.doesNotMatch(result.out + result.err, /\[permission\]|\[question\]|Type \/help|fixture question|unconfirmed/);
+      if (policy === 'block') assert.doesNotMatch(result.out, /provider terminal after decline|turn completed/);
+      else assert.match(result.out, /provider terminal after decline/);
+    });
+  }
+}
+
+test('noninteractive block preserves question kind when ZCode announces it as a permission', async () => {
+  const app = launch('automation-question', ['--runtime', 'core', '--non-interactive'], {
+    env: { TEST_QUESTION_ANNOUNCEMENT: 'McpElicitation' },
+  });
+  app.child.stdin.end('one prompt\nnever dispatch\n');
+  const result = await app.result;
+  assert.equal(result.code, 1, result.out + '\n' + result.err);
+  assert.deepEqual(oscStates(result.out), ['idle', 'working', 'blocked:kind=question']);
+  assert.doesNotMatch(result.out + result.err, /fixture question|provider terminal after decline|turn completed|unconfirmed/);
+});
+
+test('noninteractive subscribed snapshots preserve question and genuine permission kinds', async () => {
+  for (const [toolName, kind] of [
+    ['AskUserQuestion', 'question'], ['McpElicitation', 'question'], ['ExitPlanMode', 'question'], ['Bash', 'permission'],
+  ]) {
+    const client = new EventEmitter();
+    const handlers = new Map();
+    client.handle = (method, handler) => handlers.set(method, handler);
+    const output = [], states = [];
+    const controller = new AppServerController({ client, interactionPolicy: 'block', reportBeforeReady: false,
+      output: text => output.push(text), reporter: { report: snapshot => states.push(snapshot) } });
+    const request = { sessionId: 's', requestId: 'snapshot-request', toolName, turnId: 'resumed' };
+    const snapshot = observedState({ activeTurnId: 'resumed', eventSeq: 1 });
+    snapshot.projection.pendingPermissions = [request];
+    controller.attach('s', snapshot);
+    const method = kind === 'question' ? 'interaction/requestUserInput' : 'interaction/requestPermission';
+    const response = handlers.get(method)(request);
+    assert.deepEqual(response, kind === 'question' ? { action: 'decline' } : { decision: 'deny', reason: 'Client declined request' });
+    await controller.done;
+    assert.equal(controller.status().state, 'blocked');
+    assert.equal(controller.status().kind, kind, toolName);
+    assert.deepEqual(states.map(state => [state.state, state.kind]), [['blocked', kind]], toolName);
+    assert.doesNotMatch(output.join(''), /Use \/|Proposed input/);
+  }
+});
+
+test('noninteractive TTY submits slash prompts literally without interactive chrome', async () => {
+  const input = new PassThrough(), output = new PassThrough(), errorOutput = new PassThrough();
+  input.isTTY = output.isTTY = true;
+  const rawModes = [];
+  input.setRawMode = value => rawModes.push(value);
+  let stdout = '', stderr = '';
+  output.on('data', text => { stdout += text; });
+  errorOutput.on('data', text => { stderr += text; });
+  const adapters = offlineAdapters({ write() {} });
+  const prepare = adapters.prepareDesktopRuntime;
+  adapters.prepareDesktopRuntime = async options => {
+    const runtime = await prepare(options);
+    return { ...runtime, env: { ...runtime.env, TEST_SCENARIO: 'automation-literal', TEST_AUTO_RESOLVE_QUESTIONS: '1', TEST_PRESERVE_MODEL: '1' } };
+  };
+  const pending = main({ argv: ['--non-interactive'], input, output, errorOutput }, adapters);
+  input.end('/review src/a.js\n');
+  assert.equal(await pending, 0, stdout + stderr);
+  assert.match(stdout, /literal prompt accepted/);
+  assert.doesNotMatch(stdout, /\x1b\[\?2004[hl]|Type \/help|Unknown command/);
+  assert.deepEqual(rawModes, []);
+});
+
+test('noninteractive SIGTERM closes through controller state, without submitting /exit', { skip: process.platform === 'win32' }, async () => {
+  const app = launch('automation-signal', ['--non-interactive']);
+  app.send('/review src/a.js');
+  await app.wait('literal prompt accepted');
+  assert.ok(app.child.kill('SIGTERM'));
+  const result = await app.result; clean(result, 143);
+  assert.match(result.out, /stopped by client/);
+  assert.doesNotMatch(result.out, /unconfirmed/);
 });
 
 function controllerFixture() {
@@ -268,7 +584,8 @@ test('an approved request cannot silently approve a later stale reannouncement',
 });
 
 test('unexpected model substitution fails instead of silently selecting another model', async () => {
-  const app = launch('wrong-model'); app.child.stdin.end('never run\n');
+  const app = launch('wrong-model', ['--model', 'account:zai-individual-coding-plan/GLM-5.3']);
+  app.child.stdin.end('never run\n');
   const result = await app.result; clean(result, 1);
   assert.doesNotMatch(result.out, /turn completed/);
 });
@@ -387,9 +704,35 @@ test('--prompt-file sends multiline content as one prompt, including lines that 
   assert.equal(result.out.match(/\[turn completed/g)?.length, 1); assert.match(result.out, /Reply 1/);
 });
 
+test('an unreadable TUI prompt file creates and releases no Herdr reporter', async () => {
+  const input = new PassThrough(), output = new PassThrough(), errorOutput = new PassThrough();
+  const calls = [];
+  const path = fileURLToPath(new URL('./fixtures/app-server-prompt.txt/child', import.meta.url));
+  const code = await main({ argv: ['--prompt-file', path], input, output, errorOutput }, {
+    createHerdrReporter() {
+      calls.push('create');
+      return { report: () => calls.push('report'), close: () => calls.push('release') };
+    },
+    prepareDesktopRuntime() {
+      calls.push('prepare');
+      throw new Error('Unexpected bootstrap');
+    },
+  });
+  assert.equal(code, 1);
+  assert.deepEqual(calls, []);
+});
+
 test('--app-bundle is forwarded to the runtime helper', async () => {
   const app = launch('app-bundle', ['--app-bundle', '/fixture/ZCode Custom.app']); app.child.stdin.end('hello\n');
   const result = await app.result; clean(result); assert.match(result.out, /Reply 1/);
+});
+
+test('runtime scratch, copy and inspection flags reach the installed app-server path', async () => {
+  const app = launch('runtime-flags', ['--runtime-dir', '/fixture runtime', '--no-copy-catalog', '--skip-desktop-inspect']);
+  app.child.stdin.end('hello\n');
+  const result = await app.result;
+  clean(result);
+  assert.match(result.out, /Reply 1/);
 });
 
 for (const flag of ['--version', '--bridge-help']) test(`${flag} works directly without bootstrap`, async () => {

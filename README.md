@@ -10,7 +10,7 @@ You need:
 
 - macOS with ZCode Desktop 3.18.2 or later, normally in `/Applications/ZCode.app`. Keychain-backed accounts require Apple Silicon.
 - A Z.AI Individual Coding Plan account signed in through ZCode Desktop.
-- [nvm](https://github.com/nvm-sh/nvm) with the exact Node.js version declared in `toolchains.env`. The launcher uses `NVM_DIR`, or `~/.nvm` when unset.
+- [nvm](https://github.com/nvm-sh/nvm) with the exact Node.js version declared in `toolchains.env` when building or installing from the checkout.
 
 The project selects its own Node.js and npm versions. System and shell-default upgrades do not upgrade this project. See [toolchain management](docs/toolchains.md) for setup and explicit upgrades.
 
@@ -30,6 +30,8 @@ If the declared Node is missing, `setup` prints the exact `nvm install` command;
 
 Installation copies the package to `~/.local`; repeat it after source changes. Previously published archives remain unchanged: the older v0.1.0 asset does not include this toolchain policy. Build a new archive with `./dev pack` and install it with `./dev npm install --global --prefix "$HOME/.local" /absolute/path/to/archive.tgz`.
 
+The installed command uses the exact pinned nvm Node when available and otherwise uses the embedded Node runtime that ships with ZCode Desktop. The fallback works with an empty `HOME`, unset `NVM_DIR`, and `PATH=/usr/bin:/bin`. To select a different bundle, pass `--app-bundle` or set `HERDR_ZCODE_APP_BUNDLE`. `herdr-zcode --version --json` reports supported runtimes, capabilities, and the minimum Desktop version without opening an account session.
+
 The `export` command makes herdr-zcode available in this Terminal window. For new windows, you can use its full path, `"$HOME/.local/bin/herdr-zcode"`, or add the same `export` line to your shell's startup file (`~/.zshrc` for the default macOS shell).
 
 ## Try your first task
@@ -42,6 +44,16 @@ herdr-zcode --cwd "$HOME/herdr-zcode-demo"
 ```
 
 `--cwd` chooses the folder ZCode will work in. After startup, you should see the selected model, a session ID, and `Type /help for commands.`
+
+`--runtime tui` explicitly selects the default interactive runtime. Runtime selection is explicit even inside a Herdr pane.
+
+Use `--runtime core` under herdr-core 0.1.20 (`hc`) to report state through OSC 7501. In that runtime, `SIGHUP` and `SIGTERM` stop the app-server without waiting for session shutdown RPCs. Add `--non-interactive` to expose startup failures through OSC status. See the [herdr-core operating guide](HERDR.md#herdr-core-0120).
+
+In an isolated session, use `--auth-file <path>` to provide a projected Z.AI Coding Plan credential. Supply an owner-readable private JSON file. Add `--consume-auth-file` when the wrapper should remove that file before launching the app-server. Use a disposable copy for consumption. See [projected account authentication](docs/app-server.md#projected-account-authentication) for the file format and lifecycle.
+
+Add `--catalog-file <path>` to a projected TUI or Core session when it needs models from a newer compatible catalog, such as GLM-5.4. Both paths resolve against `--cwd`. An explicit catalog must match the bundled Coding Plan API settings. If validation fails, the session stops before the app-server starts. The wrapper uses the bundled catalog when you omit `--catalog-file`.
+
+On the trusted host, `herdr-zcode prepare-isolated --out-dir <directory> [--app-bundle <path>] [--json]` reads your current Desktop Coding Plan login and prepares the credential and catalog together. Supply an existing owner-only `0700` directory and keep the directory and its ancestors stable. The command writes `auth.json` with mode `0600` and `catalog.json` with mode `0400`. Both forms return one JSON receipt or one safe failure object. Use the returned paths unchanged for `--auth-file --consume-auth-file` and `--catalog-file --no-copy-catalog`. Protect the disposable auth file and remove it after a failed launch. See [trusted-host preparation](docs/app-server.md#trusted-host-preparation) for the receipt and cleanup contract.
 
 Type this request into herdr-zcode and press Enter:
 
@@ -86,13 +98,21 @@ Ctrl-C cancels active work. When no work is running, Ctrl-C exits. The default p
 
 ### Choosing a model and reasoning level
 
-By default herdr-zcode uses `account:zai-individual-coding-plan/GLM-5.3` with the reasoning level the model advertises. To override the level, append `$level` to the model, following ZCode's own model-reference convention:
+Without `--model`, herdr-zcode uses the model and effort selected by ZCode for the session. To select GLM-5.4 with max effort, use ZCode's model-reference syntax:
 
 ```sh
-herdr-zcode --cwd /path/to/project --model 'account:zai-individual-coding-plan/GLM-5.3$max'
+herdr-zcode --cwd /path/to/project --model 'account:zai-individual-coding-plan/GLM-5.4$max'
 ```
 
-Keep the model reference in single quotes so the shell passes `$max` literally. The part before `$` selects the model; the suffix after it names the reasoning level. GLM-5.3 and GLM-5.3-Flash advertise `low`, `high`, and `max`, and default to `max`. A level the model does not advertise is rejected at startup with the supported list. The startup line confirms what was applied, for example `Selected: account:zai-individual-coding-plan/GLM-5.3 (reasoning: max)`.
+Keep the model reference in single quotes so the shell passes `$max` literally. An explicit model without a suffix uses the effort advertised by ZCode. The startup line shows the applied model and any reported effort, such as `Selected: account:zai-individual-coding-plan/GLM-5.4 (reasoning: max)`.
+
+Use `--reasoning-effort <level>` or its alias `--thought-level <level>` to choose effort separately. If you also use a `$level` model suffix, the values must agree. With a Desktop login, the wrapper uses a newer matching model catalog downloaded by ZCode when available. If GLM-5.4 is missing, open ZCode Desktop to refresh its Coding Plan model catalog. See [catalog selection](docs/app-server.md#startup-and-protocol) for overrides and fallbacks.
+
+### Running a scoped session
+
+Use `--tool-allowlist` and `--tool-denylist` with comma-separated tool names. An explicit empty string (`''`) sends an empty list. Use `--disable-mcp`, `--disable-title-gen`, `--disable-offpeak`, or `--disable-dynamic-workflow` for the corresponding behavior. Repeat `--additional-dir <path>` up to 256 times and use `--persistence immediate|deferred` to choose the session's persistence. These flags apply to new sessions.
+
+With `--non-interactive`, all input lines, including slash-prefixed lines, are prompts. Unexpected permission requests and questions stop the session by default. Pass `--interaction-policy deny` to decline them and let the server continue. Noninteractive mode enables question auto-resolution, which you can also request independently with `--auto-resolve-questions`.
 
 ### Longer requests and saved conversations
 
@@ -120,6 +140,8 @@ Herdr 0.9.5 requires pane commands to send input to custom agents. See the [Herd
 
 ## Troubleshooting
 
+Run `herdr-zcode --check-desktop --json [--app-bundle <path>]` to check the Desktop bundle offline. The command returns one JSON object and exits `0` for a compatible bundle or `1` with a failure reason. It works with an empty `HOME` and `PATH=/usr/bin:/bin` and performs no account access or model calls.
+
 | Problem | What to check |
 | --- | --- |
 | A pinned tool is missing or mismatched | Run `./dev setup` and `./dev doctor` from the source checkout. Follow the exact Node installation instruction when needed. |
@@ -127,7 +149,7 @@ Herdr 0.9.5 requires pane commands to send input to custom agents. See the [Herd
 | ZCode is below the minimum version | Run `./dev doctor --desktop` to check the minimum, then update ZCode Desktop. |
 | Startup or account error | Open ZCode Desktop, check your Coding Plan login, then restart herdr-zcode. Restart it after switching accounts. |
 | ZCode is installed elsewhere | Start with `herdr-zcode --app-bundle "/path/to/ZCode.app"`. |
-| Selected model is unavailable | Check that your account catalog offers `account:zai-individual-coding-plan/GLM-5.3`. The client reports an error instead of choosing another model. |
+| Selected model is unavailable | Check that the active catalog offers the requested model. If the bundled catalog lacks GLM-5.4, refresh the Desktop Coding Plan catalog and pass the compatible `catalogFile` from a fresh `prepare-isolated` receipt as `--catalog-file`. |
 | Work is waiting for input | Use `/status`, read the pending request, and respond with the matching approval or answer command. |
 
 ## For developers

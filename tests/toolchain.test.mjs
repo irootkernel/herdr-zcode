@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, cp, readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import fs, { chmod, mkdtemp, rm, cp, readFile, writeFile, mkdir, readdir, realpath } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile as callback } from 'node:child_process';
 import { promisify } from 'node:util';
 import { inspectDesktop, readToolchains } from '../lib/toolchain.mjs';
@@ -65,6 +67,18 @@ test('Desktop minimum gates startup and newer builds keep their reported runtime
   const f = await fixture(t);
   const bundle = join(f.root, 'ZCode.app'); await mkdir(join(bundle, 'Contents/MacOS'), { recursive: true });
   const executable = join(bundle, 'Contents/MacOS/ZCode');
+  const launcher = join(bundle, 'Contents/Resources/glm/zcode.cjs');
+  const catalog = join(bundle, 'Contents/Resources/config/provider/zcode-builtin.json');
+  await mkdir(dirname(launcher), { recursive: true });
+  await mkdir(dirname(catalog), { recursive: true });
+  await writeFile(executable, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  await writeFile(launcher, '// Offline fixture');
+  await writeFile(catalog, JSON.stringify({ schemaVersion: 1, revision: 1, config: { modelConfigRules: {},
+    providerConfigRules: { providerRules: [{ providerId: 'account:zai-individual-coding-plan', config: {
+      access: { type: 'zhipu-account', accountType: 'zai', mode: 'individual-coding-plan' },
+      api: { type: 'anthropic', baseUrl: 'https://fixture.invalid/api' }, builtinModelIds: ['GLM-5.3'],
+    } }] },
+  } }));
   const { ZCODE_APP_MIN_VERSION: minimum } = readToolchains();
   const [major, minor, patch] = minimum.split('.').map(BigInt);
   const writeVersion = (app, build) => writeFile(join(bundle, 'Contents/Info.plist'),
@@ -87,5 +101,103 @@ test('Desktop minimum gates startup and newer builds keep their reported runtime
     await writeFile(executable, '#!/bin/sh\ncat <<\'JSON\'\n' + JSON.stringify({ node, electron, execPath: executable }) + '\nJSON\n', { mode: 0o755 });
     const observed = await inspectDesktop(bundle);
     assert.deepEqual([observed.minimum, observed.app, observed.build, observed.node, observed.electron], [minimum, app, build, node, electron]);
+  }
+  await writeVersion(minimum, 'legacy-build');
+  for (const node of ['19.0.0', 'legacy-node-version']) {
+    const probe = JSON.stringify({ node, electron: 'legacy-electron-version', execPath: executable });
+    await writeFile(executable, '#!/bin/sh\ncat <<\'JSON\'\n' + probe + '\nJSON\n');
+    const runtime = await prepareDesktopRuntime({ appBundle: bundle, copyCatalog: false });
+    try { assert.equal(runtime.executable, await realpath(executable)); }
+    finally { await runtime.close(); }
+    await assert.rejects(inspectDesktop(bundle), { reason: 'embedded_runtime_invalid' });
+  }
+});
+
+test('only explicitly allowed Electron Node mode can bypass the exact development pin', async t => {
+  const f = await fixture(t);
+  const manifest = join(f.root, 'toolchains.env');
+  await writeFile(manifest, (await readFile(manifest, 'utf8')).replace(/^NODE_VERSION=.*$/m, 'NODE_VERSION=0.0.0'));
+  const module = pathToFileURL(join(f.root, 'lib/toolchain.mjs')).href;
+  const verify = ({ electron, node = '24.21.0', allow = true, runAsNode = '1' }) => {
+    const script = `import { assertNode } from ${JSON.stringify(module)};
+      Object.defineProperty(process.versions, 'node', { value: ${JSON.stringify(node)} });
+      if (${JSON.stringify(Boolean(electron))}) Object.defineProperty(process.versions, 'electron', { value: '44.7.0' });
+      assertNode({ allowEmbeddedElectron: ${allow} });`;
+    return exec(process.execPath, ['--input-type=module', '-e', script], { env: { ...f.env, ELECTRON_RUN_AS_NODE: runAsNode } });
+  };
+  await verify({ electron: true });
+  await assert.rejects(verify({ electron: false }), /Expected Node 0\.0\.0/);
+  await assert.rejects(verify({ electron: true, allow: false }), /Expected Node 0\.0\.0/);
+  await assert.rejects(verify({ electron: true, runAsNode: '0' }), /Expected Node 0\.0\.0/);
+  await assert.rejects(verify({ electron: true, node: '19.0.0' }), /Unsupported ZCode embedded Node 19\.0\.0/);
+});
+
+test('runtime scratch preference and direct catalog reuse avoid inspection and strip terminal routing', async t => {
+  const f = await fixture(t);
+  const root = await realpath(f.root);
+  const appBundle = join(root, 'ZCode.app');
+  const executable = join(appBundle, 'Contents/MacOS/ZCode');
+  const launcher = join(appBundle, 'Contents/Resources/glm/zcode.cjs');
+  const catalog = join(appBundle, 'Contents/Resources/config/provider/zcode-builtin.json');
+  const tmp = join(root, 'incoming tmp'), explicit = join(root, 'explicit runtime');
+  await Promise.all([executable, launcher, catalog].map(path => mkdir(dirname(path), { recursive: true })));
+  await Promise.all([mkdir(tmp), mkdir(explicit), writeFile(executable, '#!/bin/sh\nexit 97\n', { mode: 0o755 }),
+    writeFile(launcher, ''), writeFile(catalog, '{"revision":1}')]);
+  const { prepareDesktopRuntime } = await import('../lib/desktop-runtime.mjs');
+  const env = { TMPDIR: tmp + '/', HC_TERMINAL_ID: 'fixture', HC_SOCKET: 'fixture', HC_TERMINAL_SOCKET: 'fixture',
+    HERDR_ZCODE_TOKEN: 'fixture', HERDR_ENV: '1', KEEP_ENV: 'fixture' };
+  const options = { appBundle, env, home: root, skipInspect: true };
+  const fromEnv = await prepareDesktopRuntime(options);
+  const fromFlag = await prepareDesktopRuntime({ ...options, tmpRoot: explicit });
+  t.after(async () => { await fromEnv.close(); await fromFlag.close(); });
+  assert.equal(dirname(dirname(fromEnv.configPath)), tmp);
+  assert.equal(dirname(dirname(fromFlag.configPath)), explicit);
+  assert.equal(fromFlag.executable, executable);
+  assert.deepEqual(fromFlag.args, [launcher, 'app-server', '--stdio']);
+  assert.equal(await readFile(fromFlag.configPath, 'utf8'), '{"revision":1}');
+  assert.equal(fromFlag.env.TMPDIR, env.TMPDIR);
+  assert.equal(fromFlag.env.KEEP_ENV, 'fixture');
+  assert.ok(Object.keys(fromFlag.env).every(key => !key.startsWith('HC_') && !key.startsWith('HERDR_')));
+  assert.equal(env.HC_SOCKET, 'fixture');
+
+  const direct = await prepareDesktopRuntime({ ...options, copyCatalog: false, tmpRoot: join(root, 'missing directory') });
+  assert.equal(direct.configPath, catalog);
+  assert.equal(direct.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE, catalog);
+  await direct.close();
+  assert.equal(await readFile(catalog, 'utf8'), '{"revision":1}');
+  await fromEnv.close(); await fromFlag.close();
+  assert.deepEqual(await readdir(tmp), []);
+  assert.deepEqual(await readdir(explicit), []);
+
+  await t.test('without a scratch override use the OS temporary directory without a volume probe', async t => {
+    const volumeProbes = [];
+    const { stat } = fs;
+    const mock = t.mock.method(fs, 'stat', async (path, ...args) => {
+      if (path === '/Volumes' || path.startsWith('/Volumes/')) {
+        volumeProbes.push(path);
+        throw Object.assign(new Error('Fixture denies the volume probe'), { code: 'EPERM' });
+      }
+      return stat(path, ...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      const runtime = await prepareDesktopRuntime({ ...options, env: {} });
+      try {
+        assert.equal(dirname(dirname(runtime.configPath)), resolve(tmpdir()));
+        assert.deepEqual(volumeProbes, []);
+      } finally { await runtime.close(); }
+    } finally {
+      mock.mock.restore();
+      syncBuiltinESMExports();
+    }
+  });
+
+  await chmod(executable, 0o600);
+  await assert.rejects(prepareDesktopRuntime(options), { code: 'EACCES', path: executable });
+  await chmod(executable, 0o755);
+  for (const path of [launcher, catalog]) {
+    await rm(path);
+    await assert.rejects(prepareDesktopRuntime(options), { code: 'ENOENT', path });
+    await writeFile(path, '');
   }
 });
