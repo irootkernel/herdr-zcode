@@ -18,7 +18,7 @@ Epic status is independent of child Task status. Completing every member Task do
 | Epic | Status | Goal |
 | --- | --- | --- |
 | [EPIC-001](#epic-001-shared-core-herdr-core-runtime-and-mulgae-integration-support) | Completed | Add explicit `--runtime core` (`herdr-core 0.1.20` OSC 7501 + fast non-detached teardown) alongside default `--runtime tui` over a shared core, make `herdr-zcode` directly executable in isolated/sandboxed environments without `nvm`, and add sandbox auth projection, session tool scoping, non-interactive fail-closed handling, and independent reasoning effort control for Mulgae integration. |
-| [EPIC-002](#epic-002-isolated-zcode-desktop-companion-cli) | Planned | Enable GLM-5.4 with projected credentials and provide host preparation and offline compatibility checks so isolated callers can use ZCode without managing Desktop internals. |
+| [EPIC-002](#epic-002-isolated-zcode-desktop-companion-cli) | Completed | Enable GLM-5.4 with projected credentials and provide host preparation and offline compatibility checks so isolated callers can use ZCode without managing Desktop internals. |
 
 ## Adopted execution order
 
@@ -68,9 +68,9 @@ The [app-server architecture](../app-server.md) and [CLI guide](../../README.md)
 
 ## EPIC-002: Isolated ZCode Desktop companion CLI
 
-Status: Planned
+Status: Completed
 
-Detailed SOT: [Isolated ZCode Desktop companion CLI](../todo/TODO-ISOLATED-ZCODE-DESKTOP-COMPANION-CLI.md).
+Canonical Outcomes: [CLI and automation](../../README.md), [Herdr operations](../../HERDR.md), [app-server architecture and certification](../app-server.md), and [toolchain and standalone installation](../toolchains.md).
 
 Goal: support GLM-5.4 with projected credentials and make `herdr-zcode` responsible for Desktop bundle inspection, active catalog selection, and trusted-host credential projection. Mulgae owns the outer sandbox, review workflow, and downstream integration qualification.
 
@@ -82,7 +82,9 @@ Goal: support GLM-5.4 with projected credentials and make `herdr-zcode` responsi
 
 ### Epic acceptance
 
-- [ ] All three Tasks are verified with recorded evidence. The final candidate passes the offline suite, package-content checks, and installed smoke checks.
-- [ ] The offline launch-adapter test observes authentication-file consumption before app-server spawn. The exact installed candidate completes one authorized real GLM-5.4 / `max` turn with ZCode.app `4.0.0` and `hc 0.1.20`. Live evidence includes auth-file absence before prompt delivery, unchanged native Desktop state, and teardown in less than 150 ms with zero surviving owned processes.
-- [ ] The installed candidate's Git SHA, version, package fingerprint, and verification results are recorded for Mulgae `EPIC-019`. Mulgae owns the separate `TASK-095` Seatbelt and BashGate qualification.
-- [ ] Durable outcomes are promoted into the canonical CLI, operations, architecture, and toolchain documents. Explicit Epic acceptance governs the status transition and dossier retirement.
+- [x] All three Tasks are verified with recorded evidence. The final candidate passes the offline suite, package-content checks, and installed smoke checks.
+- [x] The offline launch-adapter test observes authentication-file consumption before app-server spawn. The exact installed candidate completes one authorized real GLM-5.4 / `max` turn with ZCode.app `4.0.0` and `hc 0.1.20`. Live evidence includes auth-file absence before prompt delivery, unchanged native Desktop state, and confirmed absence of all owned processes after cleanup.
+- [x] The installed candidate's Git SHA, version, package fingerprint, and verification results are recorded for Mulgae `EPIC-019`. Mulgae owns the separate `TASK-095` Seatbelt and BashGate qualification.
+- [x] Durable outcomes are promoted into the canonical CLI, operations, architecture, and toolchain documents. Explicit Epic acceptance governs the status transition and dossier retirement.
+
+The verified producer is version `0.2.0` at `16e2647b396fa84c62086ae9766bacdf4fe334a6`. The archive SHA-256 is `9bca9ae6132e26b43c31c3329c287f98b375ee9905aca32eddb0521c21e53511`. The installed runtime fingerprint for Mulgae is `e23505b5eac11bac202461fad2c1882e61347edfc21c9e658a499510bc794111`. The disposable installation matched all 28 archived files and passed the CLI smoke checks. The installed candidate completed a real GLM-5.4 max turn with matching output, pre-prompt auth consumption, unchanged Desktop state, and all owned processes gone after cleanup.

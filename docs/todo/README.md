@@ -6,7 +6,6 @@ This directory holds temporary execution source-of-truth (SOT) dossiers for adop
 
 | Epic | Execution dossier |
 | --- | --- |
-| [EPIC-002](../roadmap/README.md#epic-002-isolated-zcode-desktop-companion-cli) | [Isolated ZCode Desktop companion CLI](TODO-ISOLATED-ZCODE-DESKTOP-COMPANION-CLI.md) |
 
 ## Lifecycle rule
 
